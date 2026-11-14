@@ -1255,7 +1255,7 @@ function renderLook(){
   if(!P || !P.length) return;
   $('lookSub').textContent = `Last 7 days${lookFrom && lookFrom.to ? `, up to ${dShort(lookFrom.to)}` : ''}. Most urgent first.`;
   const sr = liveArea ? liveArea.static_removed : null;
-  $('lookNote').textContent = sr > 0 ? `${fmt(sr)} detections at known industrial heat sources (for example gas flares) are left out.`
+  $('lookNote').textContent = sr > 0 ? `${fmt(sr)} detections at industrial heat sources are left out.`
     : meta.static_mask === false ? 'Industrial heat sources are not filtered in this data set.' : '';
   $('lookNote').hidden = !$('lookNote').textContent;
   $('look').innerHTML = (lookAll ? P : P.slice(0, 5)).map((p, i) => `<li><button type="button" data-i="${i}"${/permanent heat source/.test(p.why || '') ? ' class="perm"' : ''}><span class="l-name">${esc(p.label || coord(p.lon, p.lat))}</span>`
@@ -1538,7 +1538,7 @@ function briefing(){
 function copyLink(){
   saveHash();
   const url = location.href;
-  (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject()).then(() => toast('Link copied. It opens this same view.'), () => toast('Copy this link: ' + url));
+  (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject()).then(() => toast('Link copied.'), () => toast('Copy this link: ' + url));
 }
 
 function buildAbout(){
@@ -1613,7 +1613,7 @@ $('stateSel').onchange = () => { const c = state.sel.c, list = ctryStates.get(c)
 $('boxApply').onclick = () => {
   const b = {n:+$('bN').value, s:+$('bS').value, w:+$('bW').value, e:+$('bE').value};
   if(['bN','bS','bW','bE'].some(id => $(id).value === '') || !(b.n > b.s) || Math.abs(b.n) > 90 || Math.abs(b.s) > 90 || Math.abs(b.w) > 180 || Math.abs(b.e) > 180){
-    toast('Enter four numbers, with North above South. Example: 31.8, 25.5, -109.1, -103.3.'); return;
+    toast('Enter four numbers, with North above South.'); return;
   }
   selectBox(b);
 };
@@ -1626,9 +1626,6 @@ $('searchForm').addEventListener('submit', e => {
   const hit = names.find(n => n[0].toLowerCase() === q) || names.find(n => n[0].toLowerCase().startsWith(q)) || names.find(n => n[0].toLowerCase().includes(q));
   if(hit) selectCountry(hit[1]); else toast(`No country matches "${$('q').value.trim()}".`);
 });
-const chip = (label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'chip'; b.textContent = label; b.onclick = fn; $('chips').appendChild(b); };
-['Mexico','Brazil','Zambia','Indonesia','Australia','Canada'].forEach(n => { const hit = names.find(x => x[0] === n); if(hit) chip(n, () => selectCountry(hit[1])); });
-chip('Chihuahua (box)', () => { $('area').open = true; selectBox({n:32, s:25.5, w:-109, e:-103}, 'Chihuahua, Mexico (box)'); });
 
 // On phones steps 3 and 4 and the definition move into "More options", so the map is closer to the top
 const phone = matchMedia('(max-width: 759.98px)'), moreOpts = $('moreOpts');
