@@ -52,12 +52,14 @@ BOXES = {c: [round(v, 2) for v in box] for c, *box in db.execute(
 COUNTRIES = list(BOXES)
 COLS = {r[0] for r in db.execute("DESCRIBE monthly").fetchall()}
 NIGHT, FRP = "harm_night" in COLS, "frp" in COLS   # data built before day/night and FRP existed lacks these columns
+VV = VAL.get("viirs") if "vharm" in COLS else None   # VIIRS units; data built before them offers the unit aqua only
+UNITS = ["viirs", "aqua"] if VV else ["aqua"]
 REF = HERE / "data/reference"   # Natural Earth states and places, shared by every data root (see reference.py)
 for t in ("states", "places"):
     if (REF / f"{t}.parquet").exists():
         db.execute(f"CREATE VIEW ref_{t} AS SELECT * FROM read_parquet('{(REF / f'{t}.parquet').as_posix()}')")
 HAS = {t: (REF / f"{t}.parquet").exists() for t in ("states", "places")}
-RAW = ("raw_terra", "raw_aqua", "raw_n20", "raw_snpp", "pred_n20", "pred_snpp", "fill")
+RAW = ("raw_terra", "raw_aqua", "raw_n20", "raw_snpp", "pred_n20", "pred_snpp", "fill") + (("vpred",) if VV else ())
 MAX_EXPORT = 500_000
 
 # Live layer: the public FIRMS file with the last 7 days of NOAA-20 detections (no key needed),
@@ -72,6 +74,7 @@ if LIVE_OK:
     db.execute(f"CREATE VIEW cell_country AS SELECT * FROM read_parquet('{(ROOT / 'serve').as_posix()}/cell_country.parquet')")
 LIVE_FILE = ROOT / "live.csv"
 STATIC_FILE = ROOT / "serve/static.parquet"   # from pipeline.static_cells; absent on data built before it existed
+SEA_C = "(SELECT * FROM live_sea LEFT JOIN cell_country USING (cell_x, cell_y))"
 GONE_C = "(SELECT * FROM live_gone LEFT JOIN cell_country USING (cell_x, cell_y))"
 LIVE_C = "(SELECT * FROM live LEFT JOIN cell_country USING (cell_x, cell_y))"
 DET_C = "(SELECT * FROM live_det LEFT JOIN cell_country USING (cell_x, cell_y))"
@@ -102,7 +105,20 @@ def load_live():
                 FROM read_csv('{path.as_posix()}', types = {{'acq_date': 'DATE', 'acq_time': 'VARCHAR', 'confidence': 'VARCHAR'}}))""")
             cur.execute(f"ALTER TABLE live_raw ADD COLUMN gone BOOLEAN; UPDATE live_raw SET gone = {gone}")
             cur.execute(f"CREATE OR REPLACE TABLE live_gone AS SELECT cx AS cell_x, cy AS cell_y FROM live_raw WHERE gone AND {H.CLEAN}")
-            src = "(SELECT * EXCLUDE (cx, cy, gone) FROM live_raw WHERE NOT gone)"
+            # the record covers land only: a detection outside every known land cell must lie in (or within ~5 km of) a first-level region
+            # (a 0.1 degree box prefilters; ST_DWithin works in degrees, so the margin shrinks toward the poles)
+            sea = "false"
+            if SPATIAL and HAS["states"]:
+                cur.execute(f"""CREATE OR REPLACE TEMP TABLE live_land AS
+                  SELECT DISTINCT p.lon, p.lat FROM (SELECT DISTINCT longitude AS lon, latitude AS lat FROM live_raw
+                    WHERE NOT gone AND (cx, cy) NOT IN (SELECT cell_x, cell_y FROM cell_country)) p
+                  JOIN (SELECT w, s, e, n, ST_GeomFromGeoJSON(geojson) AS g FROM ref_states) r
+                    ON p.lon BETWEEN r.w - 0.1 AND r.e + 0.1 AND p.lat BETWEEN r.s - 0.1 AND r.n + 0.1
+                  WHERE ST_DWithin(r.g, ST_Point(p.lon, p.lat), 0.05)""")
+                sea = "(cx, cy) NOT IN (SELECT cell_x, cell_y FROM cell_country) AND (longitude, latitude) NOT IN (SELECT lon, lat FROM live_land)"
+            cur.execute(f"ALTER TABLE live_raw ADD COLUMN sea BOOLEAN; UPDATE live_raw SET sea = NOT gone AND {sea}")
+            cur.execute(f"CREATE OR REPLACE TABLE live_sea AS SELECT cx AS cell_x, cy AS cell_y FROM live_raw WHERE sea AND {H.CLEAN}")
+            src = "(SELECT * EXCLUDE (cx, cy, gone, sea) FROM live_raw WHERE NOT gone AND NOT sea)"
             cur.execute(f"CREATE OR REPLACE TABLE live_cp AS {H.cell_pass_sql(src, 'N20')}")
             cur.execute(f"""CREATE OR REPLACE TABLE live AS
                             SELECT cell_x, cell_y, daynight, n_pixels, est_table AS harm FROM ({H.apply('m', 'live_cp', 'TRUE')})""")
@@ -119,7 +135,7 @@ def load_live():
                       FROM {src} WHERE satellite = 'N20' AND {H.CLEAN}) GROUP BY 1, 2) y USING (cell_x, cell_y)""")
             strong = cur.execute("SELECT round(quantile_cont(frp, 0.9)) FROM live_det").fetchone()[0]
             first, last = cur.execute("SELECT min(acq_date), max(acq_date) FROM live_raw").fetchone()
-            live_state.update(loaded=time.time(), bin=None, strong_mw=strong or 0, masked=STATIC_FILE.exists(), **{"from": first.isoformat(), "to": last.isoformat()})
+            live_state.update(loaded=time.time(), bin=None, strong_mw=strong or 0, masked=STATIC_FILE.exists(), sea=sea != "false", **{"from": first.isoformat(), "to": last.isoformat()})
     return {"from": live_state["from"], "to": live_state["to"]}
 
 app = FastAPI(title="Fire calendar")
@@ -210,18 +226,45 @@ def bounds(value, table):
     return (value * row["q10"], value * row["q90"]) if row else (value, value)
 
 
-def calendar(country, bbox, polygon, start, end, method, fmt, time="all"):
+def parse_unit(unit):
+    """-> (unit, its columns): value, night part, live column and baseline years."""
+    unit = unit or UNITS[0]
+    if unit not in ("viirs", "aqua"):
+        raise HTTPException(422, "unit must be viirs or aqua")
+    if unit not in UNITS:
+        raise HTTPException(409, "Rebuild the data to use this unit")
+    if unit == "viirs":
+        return unit, {"col": "vharm", "night": "vharm_night", "live": "n_pixels", "base": tuple(VV["baseline"]), "name": VV["unit"]}
+    return unit, {"col": "harm", "night": "harm_night" if NIGHT else None, "live": "harm", "base": H.BASELINE, "name": VAL["unit"]}
+
+
+def viirs_month(iso, v):
+    """-> (source, measured, range table) of a month (YYYY-MM-DD) in VIIRS units; v is validation.json["viirs"]."""
+    if iso < H.AQUA_START:
+        source, table = "terra_up", v["terra"]["range"]
+    elif iso < v["start"]:
+        source, table = "modis_up", v["both"]["range"]
+    elif iso < v["ref_start"]:   # the older VIIRS satellite, scaled to the reference
+        source, table = "snpp_scaled", v.get("twin", {}).get("range", [])
+    else:
+        source, table = v["reference"].lower(), []
+    return source, iso >= v["start"], table
+
+
+def calendar(country, bbox, polygon, start, end, method, fmt, time="all", unit=None):
     if method not in ("table", "ratio"):
         raise HTTPException(422, "method must be table or ratio")
     parse_time(time)
-    if method == "ratio" and time != "all":
-        raise HTTPException(422, "method ratio works with time all only")
-    if time != "all" and not NIGHT:
+    unit, U = parse_unit(unit)
+    if method == "ratio" and (time != "all" or unit != "aqua"):
+        raise HTTPException(422, "method ratio works with time all and unit aqua only")
+    if time != "all" and not U["night"]:
         raise HTTPException(409, "Rebuild the data to use this filter")
     src, params = area(country, bbox, polygon)
     start, end = parse_month(start, "start"), parse_month(end, "end")
-    value = {"all": "harm" if method == "table" else "harm_ratio", "night": "harm_night", "day": "harm - harm_night"}[time]
-    extra = f"{'sum(harm_night)' if NIGHT else '0'} AS night, {'sum(frp)' if FRP else '0'} AS frp"
+    col, nc, base = U["col"], U["night"], U["base"]
+    value = {"all": col if method == "table" else "harm_ratio", "night": nc, "day": f"{col} - {nc}"}[time]
+    extra = f"{f'sum({nc})' if nc else '0'} AS night, {'sum(frp)' if FRP else '0'} AS frp"
     cur = db.cursor().execute(f"""
       WITH a AS (SELECT month, sum({value}) AS v, {extra}, {', '.join(f'sum({c}) AS {c}' for c in RAW)} FROM {src} GROUP BY month),
            s AS (SELECT g.month, coalesce(a.v, 0) AS v, coalesce(a.night, 0) AS night, coalesce(a.frp, 0) AS frp,
@@ -230,78 +273,86 @@ def calendar(country, bbox, polygon, start, end, method, fmt, time="all"):
                  LEFT JOIN a ON a.month = g.month),
            r AS (SELECT *, rank() OVER (PARTITION BY month(month) ORDER BY v DESC) AS rank FROM s),
            b AS (SELECT month(month) AS m, quantile_cont(v, {H.QUANTILES}) AS q, median(night) AS night_median, median(frp) AS frp_median FROM s
-                 WHERE year(month) BETWEEN {H.BASELINE[0]} AND {H.BASELINE[1]} GROUP BY 1)
+                 WHERE year(month) BETWEEN {base[0]} AND {base[1]} GROUP BY 1)
       SELECT r.*, b.q[3] AS median, b.night_median, b.frp_median, {H.anomaly_sql('r.v', 'b.q')} AS anomaly
       FROM r JOIN b ON b.m = month(r.month) WHERE r.month BETWEEN ? AND ? ORDER BY r.month""", params + [start, end])
     names = [d[0] for d in cur.description]
     months = []
     for rec in (dict(zip(names, row)) for row in cur.fetchall()):
         iso = rec["month"].isoformat()
-        source = "terra_scaled" if iso < H.AQUA_START else "aqua" if iso < H.MODEL_START else f"{PRIMARY.lower()}_model"
-        table = {"terra_scaled": VAL["terra"]["range"], "aqua": []}.get(source, VAL["satellites"][PRIMARY]["range"])
+        if unit == "viirs":
+            source, measured, table = viirs_month(iso, VV)
+        else:
+            source = "terra_scaled" if iso < H.AQUA_START else "aqua" if iso < H.MODEL_START else f"{PRIMARY.lower()}_model"
+            table, measured = {"terra_scaled": VAL["terra"]["range"], "aqua": []}.get(source, VAL["satellites"][PRIMARY]["range"]), source == "aqua"
         low, high = bounds(rec["v"], table)
         months.append({"month": iso[:7], "harmonized": round(rec["v"], 1), "low": round(low, 1), "high": round(high, 1),
-                       "median": round(rec["median"], 1), "anomaly": rec["anomaly"], "rank": rec["rank"], "source": source,
-                       "night": round(rec["night"], 1) if NIGHT else None, "night_median": round(rec["night_median"], 1) if NIGHT else None,
+                       "median": round(rec["median"], 1), "anomaly": rec["anomaly"], "rank": rec["rank"], "source": source, "measured": measured,
+                       "night": round(rec["night"], 1) if nc else None, "night_median": round(rec["night_median"], 1) if nc else None,
                        "frp": round(rec["frp"], 1) if FRP else None, "frp_median": round(rec["frp_median"], 1) if FRP else None,
-                       "filled": round(rec["fill"], 1),   # part that replaces days when Aqua did not record
-                       "raw": {c[4:]: int(rec[c]) for c in RAW[:4]}, "pred": {c[5:]: round(rec[c], 1) for c in RAW[4:6]}})
+                       "filled": round(rec["fill"], 1) if unit == "aqua" else 0,   # part that replaces days when Aqua did not record
+                       "raw": {k[4:]: int(rec[k]) for k in RAW[:4]},
+                       "pred": {"modis": round(rec["vpred"], 1)} if unit == "viirs" else {k[5:]: round(rec[k], 1) for k in RAW[4:6]}})
     if fmt == "csv":
         out = io.StringIO()
         w = csv.writer(out)
-        w.writerow(["month", "harmonized", "low", "high", "median", "anomaly", "source",
+        w.writerow(["month", "harmonized", "low", "high", "median", "anomaly", "source", "measured", "unit",
                     "raw_terra", "raw_aqua", "raw_n20", "raw_snpp"])
         for m in months:
-            w.writerow([m["month"], m["harmonized"], m["low"], m["high"], m["median"], m["anomaly"], m["source"], *m["raw"].values()])
+            w.writerow([m["month"], m["harmonized"], m["low"], m["high"], m["median"], m["anomaly"], m["source"], m["measured"], unit, *m["raw"].values()])
         return Response(out.getvalue(), media_type="text/csv",
                         headers={"Content-Disposition": "attachment; filename=fire_calendar.csv"})
-    return {"unit": VAL["unit"], "baseline": VAL["baseline"], "method": method,
+    return {"unit": unit, "unit_name": U["name"], "baseline": list(base), "method": method,
             "polygon_exact": bool(polygon and SPATIAL), "time": time, "months": months}
 
 
 @app.get("/api/calendar")
 def calendar_get(country: str | None = None, bbox: str | None = None, start: str = FIRST[:7], end: str = LAST[:7],
-                 method: str = "table", format: str = "json", time: str = "all"):
-    return calendar(country, bbox, None, start, end, method, format, time)
+                 method: str = "table", format: str = "json", time: str = "all", unit: str | None = None):
+    return calendar(country, bbox, None, start, end, method, format, time, unit)
 
 
 @app.post("/api/calendar")
 def calendar_post(body: dict = Body(...)):
     return calendar(None, None, body.get("polygon"), body.get("start", FIRST[:7]), body.get("end", LAST[:7]),
-                    body.get("method", "table"), body.get("format", "json"), body.get("time", "all"))
+                    body.get("method", "table"), body.get("format", "json"), body.get("time", "all"), body.get("unit"))
 
 
-def live(country, bbox, polygon, time="all"):
+def live(country, bbox, polygon, time="all", unit=None):
     state = load_live()
     tc = TIMES[parse_time(time)]
+    unit, U = parse_unit(unit)
     src, params = area(country, bbox, polygon, "live", LIVE_C)
-    raw, harm, night = run(f"""SELECT coalesce(sum(n_pixels), 0), coalesce(sum(harm), 0),
+    raw, harm, night = run(f"""SELECT coalesce(sum(n_pixels), 0), coalesce(sum({U['live']}), 0),
                                coalesce(sum(n_pixels) FILTER (daynight = 'N'), 0) FROM {add(src, tc)}""", params, polygon).fetchone()
     src, params = area(country, bbox, polygon, "live_det", DET_C)
     strong = run(f"SELECT count(*) FROM {add(src, tc, 'frp >= ?')}", params + [live_state["strong_mw"]], polygon).fetchone()[0]
     src, params = area(country, bbox, polygon, "live_gone", GONE_C)
     removed = run(f"SELECT count(*) FROM {src}", params, polygon).fetchone()[0] if live_state["masked"] else None   # inside the selected area
-    return {**state, "static_removed": removed, "raw": int(raw), "harmonized": round(harm, 1), "sensor": "VIIRS NOAA-20, near-real-time",
+    src, params = area(country, bbox, polygon, "live_sea", SEA_C)
+    sea = run(f"SELECT count(*) FROM {src}", params, polygon).fetchone()[0] if live_state["sea"] else None
+    return {**state, "unit": unit, "static_removed": removed, "sea_removed": sea, "raw": int(raw), "harmonized": round(harm, 1), "sensor": "VIIRS NOAA-20, near-real-time",
             "night_share": round(night / raw, 3) if raw else 0, "strong": strong, "strong_mw": live_state["strong_mw"]}
 
 
 @app.get("/api/live")
-def live_get(country: str | None = None, bbox: str | None = None, time: str = "all"):
-    """Last 7 days in the selected area: raw detections and MODIS-equivalent hotspots."""
-    return live(country, bbox, None, time)
+def live_get(country: str | None = None, bbox: str | None = None, time: str = "all", unit: str | None = None):
+    """Last 7 days in the selected area: raw detections and the count in the unit (viirs: the same number)."""
+    return live(country, bbox, None, time, unit)
 
 
 @app.post("/api/live")
 def live_post(body: dict = Body(...)):
-    return live(None, None, body.get("polygon"), body.get("time", "all"))
+    return live(None, None, body.get("polygon"), body.get("time", "all"), body.get("unit"))
 
 
 @app.get("/api/live/cells")
-def live_cells(time: str = "all"):
-    """Last 7 days as 0.5 degree cells: [west, south, raw detections, harmonized]."""
+def live_cells(time: str = "all", unit: str | None = None):
+    """Last 7 days as 0.5 degree cells: [west, south, raw detections, count in the unit]."""
     state = load_live()
-    cur = db.cursor().execute(f"""SELECT floor(cell_x / 10.0) * 0.5, floor(cell_y / 10.0) * 0.5, sum(n_pixels), round(sum(harm), 1)
-                                 FROM {add('live', TIMES[parse_time(time)])} GROUP BY 1, 2""")
+    tc, (_, U) = TIMES[parse_time(time)], parse_unit(unit)
+    cur = db.cursor().execute(f"""SELECT floor(cell_x / 10.0) * 0.5, floor(cell_y / 10.0) * 0.5, sum(n_pixels), round(sum({U['live']}), 1)
+                                 FROM {add('live', tc)} GROUP BY 1, 2""")
     return {**state, "cells": cur.fetchall()}
 
 
@@ -432,15 +483,16 @@ def label_for(lon, lat):
     return f"{round(km)} km {COMPASS[round(bearing / 45) % 8]} of {name}"
 
 
-def live_places(country, bbox, polygon, time):
+def live_places(country, bbox, polygon, time, unit=None):
     state = load_live()
     tc = TIMES[parse_time(time)]
+    unit, U = parse_unit(unit)
     src, params = area(country, bbox, polygon, "live_det", DET_C)
     cells = {(x, y): (n, fmax or 0, nn, set(ds)) for x, y, n, fmax, nn, ds in run(
         f"""SELECT cell_x, cell_y, count(*), max(frp), count(*) FILTER (daynight = 'N'), list(DISTINCT d) FROM {add(src, tc)}
             GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 3000""", params, polygon).fetchall()}
     src, params = area(country, bbox, polygon, "live", LIVE_C)
-    harm = dict(((x, y), h) for x, y, h in run(f"SELECT cell_x, cell_y, sum(harm) FROM {add(src, tc)} GROUP BY 1, 2", params, polygon).fetchall())
+    harm = dict(((x, y), h) for x, y, h in run(f"SELECT cell_x, cell_y, sum({U['live']}) FROM {add(src, tc)} GROUP BY 1, 2", params, polygon).fetchall())
     groups, seen = [], set()   # touching cells (8 neighbors)
     for start in cells:
         if start in seen:
@@ -470,20 +522,21 @@ def live_places(country, bbox, polygon, time):
         for x, y, yr in db.cursor().execute(f"""
             SELECT DISTINCT cell_x, cell_y, year(month) FROM monthly
             JOIN (SELECT unnest(?) AS cell_x, unnest(?) AS cell_y) USING (cell_x, cell_y)
-            WHERE month(month) = ? AND harm > 0""",
+            WHERE month(month) = ? AND {U['col']} > 0""",
                 [[c[0] for c in allc], [c[1] for c in allc], month]).fetchall():
             years.setdefault((x, y), set()).add(yr)
         for x, y, mo in db.cursor().execute(f"""
             SELECT DISTINCT cell_x, cell_y, month FROM monthly
             JOIN (SELECT unnest(?) AS cell_x, unnest(?) AS cell_y) USING (cell_x, cell_y)
-            WHERE month > CAST(? AS DATE) - INTERVAL 12 MONTH AND harm > 0""",
+            WHERE month > CAST(? AS DATE) - INTERVAL 12 MONTH AND {U['col']} > 0""",
                 [[c[0] for c in allc], [c[1] for c in allc], LAST]).fetchall():
             recent_months.setdefault((x, y), set()).add(mo)
     span = (datetime.date.fromisoformat(state["to"]) - datetime.date.fromisoformat(state["from"])).days + 1
-    base, mname, out = H.BASELINE[1] - H.BASELINE[0] + 1, cal.month_name[month], []
+    b0, b1 = U["base"]
+    base, mname, out = b1 - b0 + 1, cal.month_name[month], []
     for g in groups:
         burned = set().union(*(years.get(c, set()) for c in g["cells"]))
-        g["years_burned"] = sum(H.BASELINE[0] <= y <= H.BASELINE[1] for y in burned)
+        g["years_burned"] = sum(b0 <= y <= b1 for y in burned)
         g["recent_years"] = sum(y > int(LAST[:4]) - 3 for y in burned)   # sources that started after the baseline are not new
         g["strong"] = g["frp_max"] >= live_state["strong_mw"]
         g["months_last_year"] = len(set().union(*(recent_months.get(c, set()) for c in g["cells"])))
@@ -507,14 +560,14 @@ def live_places(country, bbox, polygon, time):
 
 
 @app.get("/api/live/places")
-def live_places_get(country: str | None = None, bbox: str | None = None, time: str = "all"):
+def live_places_get(country: str | None = None, bbox: str | None = None, time: str = "all", unit: str | None = None):
     """Where to look first: groups of touching cells with fire in the last 7 days, most urgent first."""
-    return live_places(country, bbox, None, time)
+    return live_places(country, bbox, None, time, unit)
 
 
 @app.post("/api/live/places")
 def live_places_post(body: dict = Body(...)):
-    return live_places(None, None, body.get("polygon"), body.get("time", "all"))
+    return live_places(None, None, body.get("polygon"), body.get("time", "all"), body.get("unit"))
 
 
 @app.get("/api/states")
@@ -544,20 +597,21 @@ MAX_CELLS = 60000
 
 
 @app.get("/api/cells")
-def fine_cells(bbox: str, month: str, time: str = "all", normal: int = Query(0, ge=0, le=1)):
-    """0.05 degree cells of the box for one month: [cell_x, cell_y, harmonized, raw(, normal)]."""
+def fine_cells(bbox: str, month: str, time: str = "all", normal: int = Query(0, ge=0, le=1), unit: str | None = None):
+    """0.05 degree cells of the box for one month: [cell_x, cell_y, value in the unit, raw(, normal)]."""
     w, s_, e, n = parse_bbox(bbox)
     if e - w > 70 or n - s_ > 45:
         raise HTTPException(422, "Zoom in to see fine detail")
     day = parse_month(month, "month")
-    if parse_time(time) != "all" and not NIGHT:
+    unit, U = parse_unit(unit)
+    if parse_time(time) != "all" and not U["night"]:
         raise HTTPException(409, "Rebuild the data to use this filter")
-    v = {"all": "harm", "night": "harm_night", "day": "harm - harm_night"}[time]
+    v = {"all": U["col"], "night": U["night"], "day": f"{U['col']} - {U['night']}"}[time]
     box = "cell_y BETWEEN ? AND ? AND cell_x BETWEEN ? AND ?"   # integer ranges let Parquet skip row groups
     bp = [math.floor(s_ / H.CELL), math.ceil(n / H.CELL) - 1, math.floor(w / H.CELL), math.ceil(e / H.CELL) - 1]
     raw = "raw_terra + raw_aqua + raw_n20 + raw_snpp"
     if normal:
-        a, b = H.BASELINE
+        a, b = U["base"]
         k = b - a + 1
         at = lambda p: f"CASE WHEN {p} <= {k} - len(l) THEN 0 ELSE l[{p} - ({k} - len(l))] END"
         sql = f"""WITH base AS (SELECT cell_x, cell_y, list(({v}) ORDER BY {v}) AS l FROM monthly
@@ -574,7 +628,7 @@ def fine_cells(bbox: str, month: str, time: str = "all", normal: int = Query(0, 
                   WHERE {box} AND month = ? AND ({v} > 0 OR {raw} > 0) ORDER BY 3 DESC, 4 DESC LIMIT {MAX_CELLS + 1}"""
         params = bp + [day]
     rows = db.cursor().execute(sql, params).fetchall()
-    return {"res": H.CELL, "month": month, "time": time, "truncated": len(rows) > MAX_CELLS,
+    return {"res": H.CELL, "month": month, "time": time, "unit": unit, "truncated": len(rows) > MAX_CELLS,
             "cells": [list(r) for r in rows[:MAX_CELLS]]}
 
 
@@ -582,7 +636,9 @@ def fine_cells(bbox: str, month: str, time: str = "all", normal: int = Query(0, 
 def meta():
     return {"countries": COUNTRIES, "boxes": BOXES, "first": FIRST[:7], "last": LAST[:7], "primary": PRIMARY,
             "aqua_start": H.AQUA_START[:7], "model_start": H.MODEL_START[:7], "data": ROOT.name, "live": LIVE_OK, "static_mask": STATIC_FILE.exists(),
-            "trust": TRUST_FILE.exists(), "night": NIGHT, "states": HAS["states"], "places": HAS["places"]}
+            "trust": TRUST_FILE.exists(), "night": NIGHT, "states": HAS["states"], "places": HAS["places"], "units": UNITS,
+            "baseline": {"aqua": list(H.BASELINE), **({"viirs": VV["baseline"]} if VV else {})},
+            "viirs": {"start": VV["start"][:7], "ref_start": VV["ref_start"][:7], "reference": VV["reference"]} if VV else None}
 
 
 @app.get("/api/validation")
@@ -602,17 +658,18 @@ def globe_bin():
 
 @app.get("/api/globe")
 def globe(month: str = Query(...)):
-    """0.5 degree cells of one month: [west, south, raw hotspots, harmonized]."""
-    cur = db.cursor().execute("SELECT gx * 0.5, gy * 0.5, raw_modis + raw_viirs, round(harm, 1) FROM globe WHERE month = ?",
+    """0.5 degree cells of one month: [west, south, raw hotspots, harmonized(, VIIRS units)]."""
+    cur = db.cursor().execute(f"SELECT gx * 0.5, gy * 0.5, raw_modis + raw_viirs, round(harm, 1){', round(vharm, 1)' if VV else ''} FROM globe WHERE month = ?",
                               [parse_month(month, "month")])
     return {"month": month, "cells": cur.fetchall()}
 
 
 @app.get("/api/globe/years")
 def globe_years():
-    cur = db.cursor().execute("""SELECT year(month), sum(raw_modis), sum(raw_viirs), round(sum(harm)) FROM globe
-                                 GROUP BY 1 ORDER BY 1""")
-    return [{"year": y, "raw_modis": int(m), "raw_viirs": int(v), "harmonized": h} for y, m, v, h in cur.fetchall()]
+    cur = db.cursor().execute(f"""SELECT year(month), sum(raw_modis), sum(raw_viirs), round(sum(harm)){', round(sum(vharm))' if VV else ''} FROM globe
+                                  GROUP BY 1 ORDER BY 1""")
+    return [{"year": y, "raw_modis": int(m), "raw_viirs": int(v), "harmonized": h, **({"viirs_units": x[0]} if x else {})}
+            for y, m, v, h, *x in cur.fetchall()]
 
 
 @app.get("/api/hotspots.csv")

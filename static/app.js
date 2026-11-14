@@ -1,5 +1,6 @@
 /* Fire Pulse. The look and the globe come from the team's first prototype (fire-pulse). The numbers come
-   from the API in app.py: fire detections adjusted to what Aqua MODIS would have reported, with tables tested on held-out years.
+   from the API in app.py, in one of two units: what VIIRS reports (the main one, measured since 2012, estimated before)
+   or what Aqua MODIS would have reported (the strict long record). Both are tested on held-out years.
    No build step: plain script, d3 + topojson from ./vendor. */
 (async function(){
 const $ = id => document.getElementById(id);
@@ -17,7 +18,7 @@ const api = (path, opts) => fetch(path, opts).then(r => r.ok ? r.json() : r.json
   const x = new Error(typeof e.detail === 'string' ? e.detail : r.statusText || String(r.status)); x.status = r.status; throw x; }));
 
 /* ---------- load ---------- */
-let G, meta, VAL, cellId, ctry, Hm, Rw, Nt = null, topo110;
+let G, meta, VAL, cellId, ctry, GR, Hm, Rw, Nt = null, topo110;
 try {
   const [bin, t110, m, v] = await Promise.all([
     fetch('api/globe.bin').then(r => { if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); }),
@@ -30,8 +31,8 @@ try {
   let off = 4 + hl; off += (-off & 3);
   const take = (Type, n) => { const a = new Type(bytes.buffer, off, n); off += n*Type.BYTES_PER_ELEMENT; off += (-off & 3); return a; };
   cellId = take(Uint32Array, G.units); ctry = take(Uint16Array, G.units);
-  const gr = {}; for(const k of (G.grids || ['harm', 'raw'])) gr[k] = take(Uint16Array, G.units*G.months);   // old files: no "grids" key
-  Hm = gr.harm; Rw = gr.raw; Nt = gr.night || null;
+  GR = {}; for(const k of (G.grids || ['harm', 'raw'])) GR[k] = take(Uint16Array, G.units*G.months);   // old files: no "grids" key
+  Hm = GR.harm; Rw = GR.raw; Nt = GR.night || null;
   topo110 = t110; meta = m; VAL = v;
 } catch(err){
   console.error(err); $('loading').hidden = true; $('loadErr').hidden = false; return;
@@ -51,6 +52,30 @@ const PRIMARY = VAL.primary, PKEY = PRIMARY.toLowerCase(), SAT = VAL.satellites[
 const SENSOR = {terra:'MODIS Terra', aqua:'MODIS Aqua', n20:'VIIRS NOAA-20', snpp:'VIIRS Suomi NPP'};
 const PLAIN = {terra:'Older satellite', aqua:'Reference satellite', snpp:'Newer satellite (first)', n20:'Newer satellite (second)'};
 const COUNTRIES = G.countries, NC = COUNTRIES.length, NONE = 65535;
+const monthName = t => `${MONTHS[monOf(t)]} ${yearOf(t)}`;
+const VV = meta.viirs || VAL.viirs || null, VSTART = VV ? tAt(VV.start) : T;
+// The two units of the record: everything the page draws or says differently for each one is here.
+// state.unit picks one; state.harm = false shows the raw counts instead (as reported, no unit).
+const UNIT = {
+  viirs:{word:'fire detections', label:'All fires the newer satellites see', grid:GR.vharm && {h:GR.vharm, n:GR.vnight || null},
+    base:(meta.baseline && meta.baseline.viirs) || (VAL.viirs && VAL.viirs.baseline), est:t => t < VSTART,
+    help:`Measured since ${monthName(VSTART)}. Earlier months are estimated from older satellites.`,
+    sentence:`Counts: all fires the newer satellites see, measured since ${monthName(VSTART)}; earlier months are estimated from older satellites.`,
+    now:t => t < VSTART ? 'Older satellites (estimated)' : 'Newer satellites (measured)',
+    mark:[yearOf(VSTART), 'the newer satellites start. Earlier months are estimated from older satellites'],
+    eras:[['e0', VSTART, `Before ${monthName(VSTART)} the newer satellites did not fly yet. These months are estimated from the older satellites.`, 'Older satellites (estimated)'],
+          ['e2', T - VSTART, 'Counted by the newer satellites, as measured.', 'Newer satellites (measured)']]},
+  aqua:{word:'detections, strict count', label:'Strict long record', grid:{h:GR.harm, n:GR.night || null},
+    base:(meta.baseline && meta.baseline.aqua) || VAL.baseline, est:t => t < AQUA || t >= MODEL,
+    help:`Fewer small fires. Measured ${monthName(AQUA)} to ${monthName(MODEL - 1)}; other months are estimated.`,
+    sentence:`Counts: the strict long record, what the reference satellite would have seen, measured ${monthName(AQUA)} to ${monthName(MODEL - 1)}; other months are estimated.`,
+    now:t => t < AQUA ? 'Older satellite (less certain)' : t < MODEL ? 'Reference satellite' : 'Newer satellite (adjusted)',
+    mark:[yearOf(MODEL), 'the newer satellites take over, adjusted so all years compare'],
+    eras:[['e0', AQUA, 'Before August 2002 only an older satellite flew. Its counts are scaled to the reference satellite. Less certain.', 'Older satellite (less certain)'],
+          ['e1', MODEL - AQUA, 'The reference satellite, as measured. Every other year is adjusted to it.', 'Reference satellite'],
+          ['e2', T - MODEL, 'From 2022 the newer satellites carry the record. Their detections are adjusted to what the reference satellite would have seen.', 'Newer satellite (adjusted)']]}};
+let UNITS = (meta.units || ['aqua']).filter(u => UNIT[u] && UNIT[u].grid && UNIT[u].base && (u === 'aqua' || VAL.viirs));
+if(!UNITS.length) UNITS = ['aqua'];
 const dShort = d => { const x = new Date(d + 'T00:00:00Z'); return isNaN(x) ? String(d) : `${x.getUTCDate()} ${MON[x.getUTCMonth()]}`; };
 const coord = (lon, lat) => `${Math.abs(lat).toFixed(2)}° ${lat < 0 ? 'S' : 'N'}, ${Math.abs(lon).toFixed(2)}° ${lon < 0 ? 'W' : 'E'}`;
 
@@ -127,19 +152,22 @@ const anomU = ratio => clamp((Math.log2(ratio) + 2)/4, 0, 1);       // 1/4x .. 4
 const TRUST = [[0.15,'#2a8296','under 15 %'],[0.3,'#35b88a','15 to 30 %'],[0.5,'#94d34f','30 to 50 %'],[Infinity,'#ffe83a','over 50 %']];
 const NOTEST = '#9aa3b2';   // "too few fires to test" is hatched, not a fifth lightness that could pass for a class
 const PTC = [lut(seqLUT, .4), lut(seqLUT, .72), C['fire-hi']];     // weak, medium, strong detections
-// brightness scale for the globe: the 99.5th percentile of non-empty adjusted cell-months
-const VMAX = (() => { const s = []; for(let i=0;i<Hm.length;i+=53) if(Hm[i]) s.push(Hm[i]); s.sort((a,b) => a-b); return s[Math.floor(s.length*.995)] || 100; })();
+// brightness scale for the globe, per unit (VIIRS counts are about 6 times larger): the 99.5th percentile of non-empty cell-months
+const vmaxOf = a => { const s = []; for(let i=0;i<a.length;i+=53) if(a[i]) s.push(a[i]); s.sort((a,b) => a-b); return s[Math.floor(s.length*.995)] || 100; };
+let VMAX = 100;
 
 /* ---------- state ---------- */
-const state = {t:T-1, harm:true, view:'count', cal:'grid', live:false, ghost:false, time:'all', strong:false, pick:false, sel:{kind:'world', name:'Earth', id:0}};
+const state = {t:T-1, harm:true, unit:UNITS[0], view:'count', cal:'grid', live:false, time:'all', strong:false, pick:false, sel:{kind:'world', name:'Earth', id:0}};
 let months = null, S = null, liveArea = null, lookList = null, lookAll = false, lookFrom = null, lastSeason = null, lastTiles = [];
 const liveCells = new Map();
 let viewPlaces = null, curVB = null, viewKey = '', wasFlat = false, statesOff = false, placesOff = false;
 const placeCache = new Map(), stateCache = new Set();
 const rawTotal = m => m.raw.terra + m.raw.aqua + m.raw.n20 + m.raw.snpp;
 const gTime = () => state.harm && Nt ? state.time : 'all';                 // the globe can split day and night only with the third grid
-const mParam = () => HAS.night && state.time !== 'all' ? {time:state.time} : {};   // monthly requests
-const lParam = () => state.time !== 'all' ? {time:state.time} : {};                 // last-7-days requests
+const uParam = () => meta.units ? {unit:state.unit} : {};                          // a server without units answers in aqua
+const mParam = () => ({...uParam(), ...(HAS.night && state.time !== 'all' ? {time:state.time} : {})});   // monthly requests
+const lParam = () => ({...uParam(), ...(state.time !== 'all' ? {time:state.time} : {})});                 // last-7-days requests
+const lcKey = () => state.unit + state.time;
 function reader(){
   if(!state.harm) return i => Rw[i];
   const tm = gTime();
@@ -147,9 +175,10 @@ function reader(){
 }
 
 // median of each calendar month per cell over the baseline years, for the "compared with normal" globe
-const medCache = new Map(), BASE = d3.range(VAL.baseline[0], VAL.baseline[1] + 1);
+const medCache = new Map();
+let BASE = [];
 function cellMedians(mo){
-  const key = mo + (state.harm ? 'h' : 'r') + gTime(); let a = medCache.get(key); if(a) return a;
+  const key = mo + state.unit + (state.harm ? 'h' : 'r') + gTime(); let a = medCache.get(key); if(a) return a;
   a = new Float32Array(U); const n = BASE.length, tmp = new Float64Array(n), rd = reader();
   for(let u=0;u<U;u++){ for(let i=0;i<n;i++) tmp[i] = rd(u*T + tOf(BASE[i], mo)); tmp.sort(); a[u] = (tmp[(n-1)>>1] + tmp[n>>1])/2; }
   medCache.set(key, a); return a;
@@ -252,7 +281,7 @@ const fhit = (b, v) => b[0][0] > b[1][0] || (b[0][0] <= v[2] && b[1][0] >= v[0] 
 
 /* ---------- confidence map: one unit per deg square from api/trust, loaded in the background ----------
    Corners are unit vectors shared by neighbours, so every frame projects each corner once and units meet without gaps. */
-let TR = null, trustOff = !HAS.trust;
+let TR = null, TRS = null, trustOff = !HAS.trust;   // TRS: the map per unit, TR: the one of the current unit
 const kmOf = deg => Number((deg*111).toPrecision(1));   // 1 degree is about 100 km
 function trustFail(){
   trustOff = true;
@@ -263,24 +292,29 @@ function trustFail(){
 function loadTrust(){
   if(trustOff) return trustFail();
   api('api/trust').then(d => {
-    const n = d.ux.length, D = d.deg, NX = Math.round(360/D), key = new Map(), cv = [], ci = new Int32Array(4*n), cls = new Uint8Array(n), at = new Map();
-    const corner = (cx, cy) => {   // -180 and 180 are one corner
-      const k = (cy + 1e4)*NX + ((cx % NX) + NX) % NX; let i = key.get(k);
-      if(i === undefined){ key.set(k, i = key.size); cv.push(...unitOf(cx*D, cy*D)); }
-      return i;
-    };
-    for(let i=0;i<n;i++){
-      const x = d.ux[i], y = d.uy[i];
-      ci[4*i] = corner(x, y); ci[4*i+1] = corner(x + 1, y); ci[4*i+2] = corner(x + 1, y + 1); ci[4*i+3] = corner(x, y + 1);
-      cls[i] = d.n[i] < d.min_n ? 4 : TRUST.findIndex(s => d.err[i] < s[0]);
-      at.set(y*1e4 + x, i);
-    }
-    TR = {...d, N:n, cv:Float32Array.from(cv), ci, cls, at, px:new Float32Array(cv.length/3*2)};
-    bump(); legend(); buildAbout();
-    const sz = d.by_size.filter(s => [20, 5, D].includes(s.deg));
-    $('trustScale').textContent = `Larger areas are more exact. Monthly counts in test years were off by ${sz.map(s => `${pct(s.err)} for about ${fmt(kmOf(s.deg))} km`).join(', ')}.`;
-    $('trustScale').hidden = false;
+    TRS = {aqua:prepTrust(d), viirs:d.viirs ? prepTrust(d.viirs) : null}; TR = TRS[state.unit];
+    bump(); legend(); buildAbout(); trustScale();
   }).catch(err => { console.error(err); trustFail(); });
+}
+function prepTrust(d){
+  const n = d.ux.length, D = d.deg, NX = Math.round(360/D), key = new Map(), cv = [], ci = new Int32Array(4*n), cls = new Uint8Array(n), at = new Map();
+  const corner = (cx, cy) => {   // -180 and 180 are one corner
+    const k = (cy + 1e4)*NX + ((cx % NX) + NX) % NX; let i = key.get(k);
+    if(i === undefined){ key.set(k, i = key.size); cv.push(...unitOf(cx*D, cy*D)); }
+    return i;
+  };
+  for(let i=0;i<n;i++){
+    const x = d.ux[i], y = d.uy[i];
+    ci[4*i] = corner(x, y); ci[4*i+1] = corner(x + 1, y); ci[4*i+2] = corner(x + 1, y + 1); ci[4*i+3] = corner(x, y + 1);
+    cls[i] = d.n[i] < d.min_n ? 4 : TRUST.findIndex(s => d.err[i] < s[0]);
+    at.set(y*1e4 + x, i);
+  }
+  return {...d, N:n, cv:Float32Array.from(cv), ci, cls, at, px:new Float32Array(cv.length/3*2)};
+}
+function trustScale(){
+  $('trustScale').hidden = !TR; if(!TR) return;
+  const sz = TR.by_size.filter(s => [20, 5, TR.deg].includes(s.deg));
+  $('trustScale').textContent = `Larger areas are more exact. Monthly ${state.unit === 'viirs' ? 'estimates' : 'counts'} in test years were off by ${sz.map(s => `${pct(s.err)} for about ${fmt(kmOf(s.deg))} km`).join(', ')}.`;
 }
 // shortcut: a unit is drawn only when all 4 corners are on the near side, so a strip of about 2 degrees at the globe's limb stays plain land
 function drawTrust(g, vb){
@@ -438,7 +472,7 @@ function drawLive0(g, cells, skip, a, moving){   // the last 7 days on 0.5 degre
 const l1Cache = new Map(), l1Bad = new Set();
 let l1Cur = null, l1Pending = null, l1Ctl = null, cellsOff = false, ptsOff = false;
 const l1Base = () => state.live ? `p|${state.time}|${state.strong ? 1 : 0}`
-  : `c|${ymOf(state.t)}|${mParam().time || 'all'}|${state.harm ? 'h' : 'r'}|${state.view === 'anom' ? 1 : 0}`;
+  : `c|${ymOf(state.t)}|${mParam().time || 'all'}|${state.harm ? 'h' : 'r'}|${state.view === 'anom' ? 1 : 0}|${state.unit}`;
 function l1Spec(){
   if(!isFlat() || playing) return null;
   const vb = viewBox(); if(!vb) return null;
@@ -553,10 +587,11 @@ function decodeTile(buf, L, x, y){
   let off = 4 + hl; off += (-off & 3);
   const nT = h.months, n = h.nnz, mstart = new Uint32Array(buf, off, nT + 1); off += (nT + 1)*4;
   const u16 = () => { const a = new Uint16Array(buf, off, n); off += n*2; off += (-off & 3); return a; };
-  const idx = u16(), harm = u16(), night = u16(), raw = u16();
+  const idx = u16(), harm = u16(), night = u16(), raw = u16(), vharm = h.v ? u16() : null, vnight = h.v ? u16() : null;
   const t = TL[L], b = tileBox(L, x, y), vx = new Float32Array(10000), vy = new Float32Array(10000), vz = new Float32Array(10000);
   for(let r=0;r<100;r++) for(let c=0;c<100;c++){ const v = unitOf(b[0] + (c + .5)*t.cell, b[1] + (r + .5)*t.cell), i = r*100 + c; vx[i] = v[0]; vy[i] = v[1]; vz[i] = v[2]; }
-  return {nT, t0:tAt(h.first || '2000-11'), mstart, idx, harm, night, raw, scale:+h.scale || 1, hasNight:!!h.night, vx, vy, vz, norm:new Map()};
+  return {nT, t0:tAt(h.first || '2000-11'), mstart, idx, raw, vx, vy, vz, norm:new Map(),
+          u:{aqua:{h:harm, n:night, s:+h.scale || 1}, viirs:h.v ? {h:vharm, n:vnight, s:+h.vscale || 1} : null}};   // per unit: counts, night part, scale
 }
 function startTile(it){
   const ctl = new AbortController(), e = {state:'loading', ctl, bytes:0, used:0};
@@ -604,12 +639,13 @@ function prefetchFly(lonR, latR, k1){   // the tiles of the destination, asked f
   pumpTiles();
 }
 // normal of each cell for one calendar month and filter: median over the baseline years, a missing year counts as 0
-const tileVal = (d, i, filt) => filt === 'raw' ? d.raw[i] : filt === 'night' ? d.night[i]/d.scale : filt === 'day' ? Math.max(0, d.harm[i] - d.night[i])/d.scale : d.harm[i]/d.scale;
-function tileNormal(e, mo, filt){
-  const d = e.data, key = mo + filt; let r = d.norm.get(key); if(r) return r;
+// a = the unit's arrays of the tile (d.u[unit]), picked once per tile and frame
+const tileVal = (d, a, i, filt) => filt === 'raw' ? d.raw[i] : filt === 'night' ? a.n[i]/a.s : filt === 'day' ? Math.max(0, a.h[i] - a.n[i])/a.s : a.h[i]/a.s;
+function tileNormal(e, mo, filt, a){
+  const d = e.data, key = state.unit + mo + filt; let r = d.norm.get(key); if(r) return r;   // the unit also sets the baseline years
   const ny = BASE.length, buf = new Float32Array(10000*ny), seen = new Uint8Array(10000), ids = [];
   BASE.forEach((Y, yi) => { const t = tOf(Y, mo) - d.t0; if(t < 0 || t >= d.nT) return;
-    for(let i=d.mstart[t];i<d.mstart[t + 1];i++){ const id = d.idx[i]; buf[id*ny + yi] = tileVal(d, i, filt); if(!seen[id]){ seen[id] = 1; ids.push(id); } } });
+    for(let i=d.mstart[t];i<d.mstart[t + 1];i++){ const id = d.idx[i]; buf[id*ny + yi] = tileVal(d, a, i, filt); if(!seen[id]){ seen[id] = 1; ids.push(id); } } });
   const med = new Float32Array(10000), tmp = new Float32Array(ny), keep = [];
   for(const id of ids){ for(let j=0;j<ny;j++) tmp[j] = buf[id*ny + j]; tmp.sort(); med[id] = (tmp[(ny - 1) >> 1] + tmp[ny >> 1])/2; if(med[id] > 0) keep.push(id); }
   keep.sort((a, b) => a - b);
@@ -620,7 +656,8 @@ const tCur = new Float32Array(10000), tMark = new Uint8Array(10000);
 function tileSquares(e, L, tb, box, vb){   // push the squares of one tile for the selected month, inside box and view
   const d = e.data, t = state.t - d.t0; if(t < 0 || t >= d.nT) return;
   const c = TL[L], f100 = 100/c.n, side = Math.max(1.2, PC.k*c.cell*RAD), anom = state.view === 'anom';
-  const filt = state.harm ? (mParam().time || 'all') : 'raw';
+  const filt = state.harm ? (mParam().time || 'all') : 'raw', ua = d.u[state.unit];
+  if(!ua){ cells0(vb, box); return; }   // a tile from before the rebuild has no VIIRS units
   const w = Math.max(box[0], vb ? vb[0] : -180), e2 = Math.min(box[2], vb ? vb[2] : 180), s = Math.max(box[1], vb ? vb[1] : -90), n = Math.min(box[3], vb ? vb[3] : 90);
   if(w >= e2 || s >= n) return;
   const c0 = clamp(Math.floor((w - tb[0])/c.cell + 1e-6), 0, 99), c1 = clamp(Math.ceil((e2 - tb[0])/c.cell - 1e-6) - 1, 0, 99);
@@ -632,14 +669,14 @@ function tileSquares(e, L, tb, box, vb){   // push the squares of one tile for t
     for(let i=a;i<b;i++){
       const id = d.idx[i]; if(id > last) break;
       const col = id % 100; if(col < c0 || col > c1) continue;
-      const v = tileVal(d, i, filt); if(v*f100 < 1) continue;
+      const v = tileVal(d, ua, i, filt); if(v*f100 < 1) continue;
       if(!projU(d.vx[id], d.vy[id], d.vz[id], side)) continue;
       sqPush(PX[0], PX[1], side, Math.min(NB-1, Math.floor(Math.sqrt(Math.min(1, v*f100/VMAX))*NB)), v, L, -1);
     }
     return;
   }
-  const nm = tileNormal(e, monOf(state.t), filt), list = [];
-  for(let i=a;i<b;i++){ const id = d.idx[i]; if(id > last) break; const col = id % 100; if(col < c0 || col > c1) continue; tCur[id] = tileVal(d, i, filt); tMark[id] = 1; list.push(id); }
+  const nm = tileNormal(e, monOf(state.t), filt, ua), list = [];
+  for(let i=a;i<b;i++){ const id = d.idx[i]; if(id > last) break; const col = id % 100; if(col < c0 || col > c1) continue; tCur[id] = tileVal(d, ua, i, filt); tMark[id] = 1; list.push(id); }
   for(const id of nm.ids){ if(id < r0*100) continue; if(id > last) break; const col = id % 100; if(col < c0 || col > c1 || tMark[id]) continue; list.push(id); }
   for(const id of list){
     const v = tCur[id], m = nm.med[id]; tCur[id] = 0; tMark[id] = 0;
@@ -746,7 +783,7 @@ function drawFire(g, moving, now){
     const f = !L1 ? 0 : reduced || !L1.shownAt ? 1 : clamp((now - L1.shownAt)/200, 0, 1);
     if(L1 && f < 1) dirty = true;
     const skip = L1 && f >= 1 ? L1.vb : null, a0 = L1 && f < 1 ? 1 - f : 1;   // after the fade, level 0 only outside the level 1 box
-    if(state.live){ const cells = liveCells.get(state.time); if(cells && a0 > 0) drawLive0(g, cells, skip, a0, moving); }
+    if(state.live){ const cells = liveCells.get(lcKey()); if(cells && a0 > 0) drawLive0(g, cells, skip, a0, moving); }
     else if(state.view !== 'trust' && a0 > 0){
       cells0(vb, null);
       if(skip){ let j = 0; for(let i=0;i<SQ.n;i++){ const u = SQ.u[i]; if(inBox(skip, lonD[u], latD[u])) continue;   // drop squares under level 1
@@ -910,6 +947,7 @@ cv.addEventListener('pointermove', e => {
     const ll = TR && lonLat(x, y), i = ll ? TR.at.get(Math.floor(ll[1]/TR.deg)*1e4 + Math.floor(ll[0]/TR.deg)) : undefined;
     if(i === undefined || countryAt(ll[0], ll[1]) < 0){ tip.hidden = true; return; }   // the sea part of a coastal unit is not drawn
     showTip(TR.cls[i] === 4 ? `Too few fires here to test (${fmt(TR.n[i])} detections in the test years).`
+      : state.unit === 'viirs' ? `In test years, the monthly count estimated from the older satellites for this area (about ${kmOf(TR.deg)} km) was off by ${pct(TR.err[i])}.\nOlder satellite count, not converted: ${pct(TR.raw[i])}.\n${fmt(TR.n[i])} detections in the test.`
       : `In test years, the adjusted monthly count for this area (about ${kmOf(TR.deg)} km) was off by ${pct(TR.err[i])}.\nWithout adjustment: ${pct(TR.raw[i])}.\n${fmt(TR.n[i])} detections in the test.`, e.clientX, e.clientY);
     return;
   }
@@ -926,7 +964,7 @@ cv.addEventListener('pointermove', e => {
         showTip(`${dShort(p[2])}, ${p[3]} local time${p[5] === 'N' ? ' (night)' : ''}\n${smw != null && p[4] >= smw ? 'Strong fire. ' : ''}Burning ${p[6]} of ${Math.max(d.days, p[6])} days here`, e.clientX, e.clientY); }
       else { const v = d.v[best];
         showTip(d.anom ? `${name}${ratioText(v, `${MONTHS[m]} in this square`)}`
-          : `${name}${v < 10 ? +v.toFixed(1) : fmt(v)} fire detections${state.harm ? ' (adjusted)' : ''} in this square of about 5 km, ${MON[m]} ${yr}`, e.clientX, e.clientY); }
+          : `${name}${v < 10 ? +v.toFixed(1) : fmt(v)} ${unitWord()} in this square of about 5 km, ${MON[m]} ${yr}`, e.clientX, e.clientY); }
       return;
     }
   }
@@ -934,7 +972,7 @@ cv.addEventListener('pointermove', e => {
   for(let i=0;i<SQ.n;i++){ const h = Math.max(SQ.s[i]/2, 6), dx = Math.abs(SQ.x[i] - x), dy = Math.abs(SQ.y[i] - y); if(dx > h || dy > h) continue; const dd = dx*dx + dy*dy; if(dd < bd){ bd = dd; best = i; } }
   if(best < 0){ if(st && !drawMode) showTip(`${st.name}\nClick to choose this area`, e.clientX, e.clientY); else tip.hidden = true; return; }
   const u = SQ.u[best], v = SQ.v[best], km = [50, 25, 10, 5][SQ.l[best]], nm = name || (u >= 0 && ctry[u] !== NONE ? COUNTRIES[ctry[u]] + '\n' : '');
-  showTip(state.view === 'count' ? `${nm}${v < 10 && SQ.l[best] ? +v.toFixed(1) : fmt(v)} fire detections${state.harm ? ' (adjusted)' : ''} in this square of about ${km} km, ${MON[m]} ${yr}`
+  showTip(state.view === 'count' ? `${nm}${v < 10 && SQ.l[best] ? +v.toFixed(1) : fmt(v)} ${unitWord()} in this square of about ${km} km, ${MON[m]} ${yr}`
                                  : `${nm}${ratioText(v, `${MONTHS[m]} in this square`)}`, e.clientX, e.clientY);
 });
 cv.addEventListener('pointerup', e => {
@@ -989,10 +1027,10 @@ function select(sel, where){
   return loadMonths();
 }
 async function loadMonths(){
-  const sel = state.sel; $('panel').classList.add('busy');
+  const sel = state.sel, unit = state.unit; $('panel').classList.add('busy');
   try {
     const r = await api(...request(mParam()));
-    if(state.sel !== sel) return;
+    if(state.sel !== sel || state.unit !== unit) return;
     months = r.months; renderStatic(); renderTime();
     if(sel.polygon && r.polygon_exact === false) toast('Exact shapes are not available on this server. The surrounding box was used.');
   } catch(err){
@@ -1002,15 +1040,15 @@ async function loadMonths(){
 }
 function loadLive(){
   if(!HAS.live) return;
-  const sel = state.sel, tm = state.time;
-  api(...request(lParam(), 'api/live')).then(l => { if(state.sel === sel && state.time === tm){ liveArea = l; renderAnswer(); renderLook(); legend(); dirty = true; } })
-    .catch(() => { if(state.sel === sel && state.time === tm){ liveArea = false; renderAnswer(); } });   // the answer works without it
+  const sel = state.sel, k = lcKey();
+  api(...request(lParam(), 'api/live')).then(l => { if(state.sel === sel && lcKey() === k){ liveArea = l; renderAnswer(); renderLook(); legend(); dirty = true; } })
+    .catch(() => { if(state.sel === sel && lcKey() === k){ liveArea = false; renderAnswer(); } });   // the answer works without it
 }
 function loadLook(){
   lookList = null; lookAll = false; renderLook();
   if(!HAS.live) return;
-  const sel = state.sel, tm = state.time;
-  api(...request(lParam(), 'api/live/places')).then(r => { if(state.sel === sel && state.time === tm){ lookList = Array.isArray(r.places) ? r.places : null; lookFrom = r; renderLook(); } })
+  const sel = state.sel, k = lcKey();
+  api(...request(lParam(), 'api/live/places')).then(r => { if(state.sel === sel && lcKey() === k){ lookList = Array.isArray(r.places) ? r.places : null; lookFrom = r; renderLook(); } })
     .catch(() => {});
 }
 function selectCountry(c){
@@ -1098,8 +1136,12 @@ function ratioText(r, noun){   // never "0.9x": times when clearly more, percent
   if(r > 0.95) return `About normal for ${noun}`;
   return `${Math.round(100*(1 - r))} % below normal for ${noun}`;
 }
-const unitWord = () => state.harm ? 'adjusted detections' : 'detections as reported';
-const srcWord = x => ({terra_scaled:'Counted by the older satellite (less certain)', aqua:'Counted by the reference satellite'})[x.source] || 'Counted by the newer satellites, adjusted so all years compare';
+const unitWord = () => state.harm ? UNIT[state.unit].word : 'detections as reported';
+const unitSentence = () => state.harm ? UNIT[state.unit].sentence : 'Counts as the satellites reported them. Years cannot be compared.';
+// a month is estimated when the server says so; data from before the units change has no flag, then the era decides
+const isEst = t => state.harm && !(months[t].measured ?? !UNIT[state.unit].est(t));
+const srcWord = (x, t) => state.unit === 'viirs' ? (isEst(t) ? 'Estimated from the older satellites' : 'Measured by the newer satellites')
+  : x.source === 'aqua' ? 'Measured by the reference satellite' : x.source === 'terra_scaled' ? 'Estimated from an older satellite (less certain)' : 'Estimated from the newer satellites';
 
 /* ---------- answer ---------- */
 const cal = $('cal'), Wv = 360, L = 38, Rm = 10, Tp = 8, B = 20, iw = Wv - L - Rm, sfmt = d3.format('~s');
@@ -1108,12 +1150,9 @@ for(const id of ['yFrom','yTo','pYear']) for(const y of YEARS) $(id).add(new Opt
 MONTHS.forEach((m, i) => $('pMonth').add(new Option(m, i)));
 $('yFrom').value = YEARS[0]; $('yTo').value = YEARS.at(-1);
 $('tRange').max = T - 1;
-$('eras').innerHTML = `<span class="era e0" style="flex:${AQUA}" data-tip="Before August 2002 only an older satellite flew. Its counts are scaled to the reference satellite. Less certain.">Older satellite (less certain)</span>`
-  + `<span class="era e1" style="flex:${MODEL - AQUA}" data-tip="The reference satellite, as measured. Every other year is adjusted to it.">Reference satellite</span>`
-  + `<span class="era e2" style="flex:${T - MODEL}" data-tip="From 2022 the newer satellites carry the record. Their detections are adjusted to what the reference satellite would have seen.">Newer satellite (adjusted)</span>`;
 const yearRange = () => { const a = +$('yFrom').value, b = +$('yTo').value; return [Math.min(a, b), Math.max(a, b)]; };
-const tipOf = t => { const m = months[t]; let s = `${MON[monOf(t)]} ${yearOf(t)}: ${fmt(S[t])} ${unitWord()}`;
-  if(state.harm && m.low !== m.high) s += `\nlikely ${fmt(m.low)} to ${fmt(m.high)}`;
+const tipOf = t => { const m = months[t], est = isEst(t); let s = `${MON[monOf(t)]} ${yearOf(t)}: ${fmt(S[t])} ${unitWord()}`;
+  if(state.harm && (est || m.low !== m.high)) s += '\n' + (est ? 'estimated' : '') + (est && m.low !== m.high ? ', ' : '') + (m.low !== m.high ? `likely ${fmt(m.low)} to ${fmt(m.high)}` : '');
   return s; };
 const medOf = mo => (months && months[firstOf(mo)] && months[firstOf(mo)].median) || 0;
 
@@ -1133,6 +1172,7 @@ function renderStatic(){
   $('calUnit').textContent = anom ? 'each month against normal for that month' : unitWord() + ' per month';
   $('calRamp').className = 'ramp ' + (anom ? 'div' : 'seq');
   $('calLo').textContent = anom ? 'Lower than normal' : 'Fewer'; $('calHi').textContent = anom ? 'Higher than normal' : 'More';
+  $('calEst').hidden = !months.some((_, t) => isEst(t));
   renderCalendar(); renderYears(); renderCheck();
 }
 
@@ -1142,20 +1182,23 @@ function renderCalendar(){
   cal.className = state.cal === 'grid' ? 'cal' : 'cal rings';
   if(state.cal === 'rings'){
     const Rr = 180, r0 = 26, dr = (Rr - 18 - r0)/YEARS.length, arc = d3.arc();
-    let h = `<svg viewBox="${-Rr} ${-Rr} ${2*Rr} ${2*Rr}" role="img" aria-label="Fire rings: one ring per year, months around like a clock">`;
+    let h = `<svg viewBox="${-Rr} ${-Rr} ${2*Rr} ${2*Rr}" role="img" aria-label="Fire rings: one ring per year, months around like a clock">`
+      + '<defs><pattern id="estH" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="1.2" height="4" fill="rgba(6,10,19,.6)"/></pattern></defs>';
     YEARS.forEach((y, i) => { for(let m=0;m<12;m++){ const t = tOf(y, m); if(t < 0 || t >= T) continue;
-      h += `<path data-t="${t}" class="${t === state.t ? 'now' : ''}" fill="${calColor[t] || C['surface-2']}" data-tip="${calTip[t]}" d="${arc({innerRadius:r0 + i*dr, outerRadius:r0 + (i + 1)*dr - 0.5, startAngle:m*Math.PI/6 + 0.01, endAngle:(m + 1)*Math.PI/6 - 0.01})}"/>`; } });
+      const d = arc({innerRadius:r0 + i*dr, outerRadius:r0 + (i + 1)*dr - 0.5, startAngle:m*Math.PI/6 + 0.01, endAngle:(m + 1)*Math.PI/6 - 0.01});
+      h += `<path data-t="${t}" class="${t === state.t ? 'now' : ''}" fill="${calColor[t] || C['surface-2']}" data-tip="${calTip[t]}" d="${d}"/>`
+        + (isEst(t) ? `<path class="est" fill="url(#estH)" d="${d}"/>` : ''); } });
     MON.forEach((mn, m) => { const an = (m + .5)*Math.PI/6; h += `<text x="${Math.sin(an)*(Rr - 8)}" y="${-Math.cos(an)*(Rr - 8) + 3}" text-anchor="middle">${mn}</text>`; });
     cal.innerHTML = h + `<text text-anchor="middle" y="-2">${YEARS[0]}</text><text text-anchor="middle" y="9">inside</text></svg>`;
     return;
   }
   let h = '<div class="cal-row head"><span></span>' + MON.map(m => `<span>${m[0]}</span>`).join('') + '<span>Year</span></div>';
   YEARS.forEach((y, i) => {
-    if(state.harm && y === yearOf(MODEL)) h += `<div class="era-mark">${y}: the newer satellites take over, adjusted so all years compare</div>`;
+    if(state.harm && y === UNIT[state.unit].mark[0]) h += `<div class="era-mark">${y}: ${UNIT[state.unit].mark[1]}</div>`;
     if(!state.harm && firstViirs >= 0 && y === yearOf(firstViirs)) h += `<div class="era-mark">${y}: a newer satellite starts and sees more small fires</div>`;
     h += `<div class="cal-row${y < a || y > b ? ' out' : ''}"><span class="cal-y">${y}</span>`;
     for(let m=0;m<12;m++){ const t = tOf(y, m);
-      h += t < 0 || t >= T ? '<div class="cell none"></div>' : `<div class="cell${t === state.t ? ' now' : ''}" data-t="${t}" data-tip="${calTip[t]}" style="background:${calColor[t]}"></div>`; }
+      h += t < 0 || t >= T ? '<div class="cell none"></div>' : `<div class="cell${t === state.t ? ' now' : ''}${isEst(t) ? ' est' : ''}" data-t="${t}" data-tip="${calTip[t]}" style="background-color:${calColor[t]}"></div>`; }
     h += `<div class="cal-bar" data-tip="${y}: ${fmt(tot[i])} ${unitWord()}"><i style="width:${100*tot[i]/tmax}%"></i></div></div>`;
   });
   cal.innerHTML = h;
@@ -1184,8 +1227,8 @@ function renderTime(){
   $('readout').textContent = state.live ? liveLabel() : `${MONTHS[monOf(t)]} ${yearOf(t)}`;
   $('tRange').value = t;
   $('tRange').hidden = state.live && !!PB; $('dRange').hidden = !(state.live && PB);   // in the last 7 days the slider picks a day
-  $('sensorNow').textContent = state.live ? 'Newer satellite, first numbers' + (state.harm ? ', adjusted' : ', as reported')
-    : state.harm ? (t < AQUA ? 'Older satellite (less certain)' : t < MODEL ? 'Reference satellite' : 'Newer satellite (adjusted)')
+  $('sensorNow').textContent = state.live ? 'Newer satellite, first numbers' + (!state.harm ? ', as reported' : state.unit === 'viirs' ? '' : ', strict count')
+    : state.harm ? UNIT[state.unit].now(t)
     : 'Counts as reported' + (months && months[t].raw.n20 + months[t].raw.snpp > 0 ? ', newer satellites included' : '');
   syncWhen(); legend(); dirty = true;
   if(!months) return;
@@ -1218,12 +1261,12 @@ function renderAnswer(){
     else if(lw.normal < 1 && lw.n < 5) setStatus('●', 'flat', 'Off season', `Hardly any fire in a normal ${MONTHS[lw.lm]} week here.`, src);
     else { const r = lw.n/Math.max(lw.normal, 1), L = LEVEL[ratioLevel(r)]; setStatus(L[0], L[1], L[2], ratioText(r, `${MONTHS[lw.lm]} week`) + '.', src); }
   } else if(!state.harm){
-    setStatus('●', 'flat', 'Counts as reported', `${fmt(cur)} fire detections in ${MONTHS[m]} ${yr}.`, 'These counts cannot be compared across years. Choose "Comparable across years" under Advanced for a verdict.');
+    setStatus('●', 'flat', 'Counts as reported', `${fmt(cur)} fire detections in ${MONTHS[m]} ${yr}.`, `These counts cannot be compared across years. Choose "${UNIT[UNITS[0]].label}" under Advanced for a verdict.`);
   } else if(d3.max(S) < 1){
     setStatus('', 'flat', 'No fires on record', `Nothing on record in this area since ${Y0}.`, '');
   } else {
     const n = months.filter((_, i) => monOf(i) === m).length;
-    const src = `${tm}${srcWord(x)}${x.low !== x.high ? `. Likely ${fmt(x.low)} to ${fmt(x.high)}` : ''}. ${fmt(cur)} ${unitWord()}, ${ordinal(x.rank)} highest of ${n} ${MONTHS[m]}s on record.`
+    const src = `${tm}${srcWord(x, t)}${x.low !== x.high ? `. Likely ${fmt(x.low)} to ${fmt(x.high)}` : ''}. ${fmt(cur)} ${unitWord()}, ${ordinal(x.rank)} highest of ${n} ${MONTHS[m]}s on record.`
       + (x.filled >= 1 ? ` Includes ${fmt(x.filled)} for days when the reference satellite did not record.` : '');
     if(x.anomaly === 'insufficient' && cur < 5) setStatus('●', 'flat', 'Off season', `Hardly any fire in a normal ${MONTHS[m]} here.`, src);
     else if(x.anomaly === 'insufficient') setStatus('▲', 'up', 'Higher than normal', `${fmt(cur)} fire detections in a month that is usually quiet here.`, src);
@@ -1232,7 +1275,7 @@ function renderAnswer(){
 
   const sm = lastSeason = seasonModel(t), tl = [];
   if(HAS.live && liveArea !== false) tl.push(['Last 7 days', lw ? fmt(lw.n) : '…', lw && lw.normal != null ? `${unitWord()}. A normal ${MONTHS[lw.lm]} week has about ${fmt(lw.normal)}.` : unitWord()]);
-  tl.push([t === T-1 ? `This month (${MON[m]} ${yr})` : `${MONTHS[m]} ${yr}`, fmt(cur), state.harm ? `${unitWord()}. Normal is about ${fmt(x.median)}.` : unitWord()]);
+  tl.push([t === T-1 ? `This month (${MON[m]} ${yr})` : `${MONTHS[m]} ${yr}`, fmt(cur), state.harm ? `${unitWord()}${isEst(t) ? ', estimated' : ''}. Normal is about ${fmt(x.median)}.` : unitWord()]);
   tl.push(['Season so far', sm && sm.ratio != null ? pct(sm.ratio) : '–', sm && sm.ratio != null ? `of a normal season, since ${MON[sm.start]} ${yearOf(sm.t0)}` : 'Too early in the season to tell']);
   lastTiles = tl;
   $('tiles').innerHTML = tl.map(([a, v, s]) => `<div class="tile"><span class="t-name">${esc(a)}</span><span class="t-val">${esc(v)}</span><span class="t-sub">${esc(s)}</span></div>`).join('');
@@ -1258,9 +1301,9 @@ function renderLook(){
   $('lookSec').hidden = !(P && P.length);
   if(!P || !P.length) return;
   $('lookSub').textContent = `Last 7 days${lookFrom && lookFrom.to ? `, up to ${dShort(lookFrom.to)}` : ''}. Most urgent first.`;
-  const sr = liveArea ? liveArea.static_removed : null;
-  $('lookNote').textContent = sr > 0 ? `${fmt(sr)} detections at industrial heat sources are left out.`
-    : meta.static_mask === false ? 'Industrial heat sources are not filtered in this data set.' : '';
+  const sr = liveArea ? liveArea.static_removed : null, sea = liveArea ? liveArea.sea_removed : null;
+  $('lookNote').textContent = (sr > 0 ? `${fmt(sr)} detections at industrial heat sources are left out.`
+    : meta.static_mask === false ? 'Industrial heat sources are not filtered in this data set.' : '') + (sea > 0 ? ` ${fmt(sea)} detections over the sea are left out.` : '');
   $('lookNote').hidden = !$('lookNote').textContent;
   $('look').innerHTML = (lookAll ? P : P.slice(0, 5)).map((p, i) => `<li><button type="button" data-i="${i}"${/permanent heat source/.test(p.why || '') ? ' class="perm"' : ''}><span class="l-name">${esc(p.label || coord(p.lon, p.lat))}</span>`
     + (p.why ? `<span class="l-why">${esc(p.why)}</span>` : '') + `<span class="l-n">${fmt(p.detections)} fire detection${p.detections === 1 ? '' : 's'}</span></button></li>`).join('');
@@ -1291,35 +1334,24 @@ function renderSeason(sm){
   const sc = d3.scaleLinear().domain([0, Math.max(1, d3.max(sm.q90), d3.max(sm.cur.filter(ok)) || 0)]).nice(3).range([Tp + ih, Tp]);
   const x = i => L + iw*i/11, line = d3.line().defined(ok).x((d, i) => x(i)).y(d => sc(d)), area = d3.area().x((d, i) => x(i)).y0((d, i) => sc(sm.q10[i])).y1((d, i) => sc(sm.q90[i]));
   const fy = sm.start === 0 ? `${yearOf(sm.t0)}` : `${yearOf(sm.t0)}–${String(yearOf(sm.t0) + 1).slice(2)}`;
+  const est = d3.range(Math.max(0, sm.t0), sm.t0 + sm.k + 1).some(isEst), ec = est ? ' est' : '';
   let h = `<svg viewBox="0 0 ${Wv} ${Hv}" role="img" aria-label="Fire detections added up since ${MONTHS[sm.start]}, this season against a normal season">`;
   sc.ticks(3).forEach(v => { h += `<line class="grid" x1="${L}" x2="${Wv-Rm}" y1="${sc(v)}" y2="${sc(v)}"/><text class="axis" x="${L-6}" y="${sc(v)+4}" text-anchor="end">${sfmt(v)}</text>`; });
   d3.range(12).forEach(i => { h += `<text class="axis" x="${x(i)}" y="${Hv-5}" text-anchor="middle">${lab(i)[0]}</text>`; });
-  h += `<path class="band" d="${area(sm.q50)}"/><path class="med" d="${line(sm.q50)}"/><path class="cur" d="${line(sm.cur)}"/>`;
-  if(ok(sm.cur[sm.k])) h += `<circle class="dot" cx="${x(sm.k)}" cy="${sc(sm.cur[sm.k])}" r="4.5"/>`;
-  d3.range(12).forEach(i => { h += `<rect class="hit" x="${x(i)-iw/22}" y="${Tp}" width="${iw/11}" height="${ih}" data-tip="To the end of ${lab(i)}&#10;This season: ${ok(sm.cur[i]) ? fmt(sm.cur[i]) : 'not yet'}&#10;Normal: ${fmt(sm.q50[i])}&#10;8 of 10 seasons: ${fmt(sm.q10[i])} to ${fmt(sm.q90[i])}"/>`; });
+  h += `<path class="band" d="${area(sm.q50)}"/><path class="med" d="${line(sm.q50)}"/><path class="cur${ec}" d="${line(sm.cur)}"/>`;
+  if(ok(sm.cur[sm.k])) h += `<circle class="dot${ec}" cx="${x(sm.k)}" cy="${sc(sm.cur[sm.k])}" r="4.5"/>`;
+  d3.range(12).forEach(i => { h += `<rect class="hit" x="${x(i)-iw/22}" y="${Tp}" width="${iw/11}" height="${ih}" data-tip="To the end of ${lab(i)}&#10;This season: ${ok(sm.cur[i]) ? fmt(sm.cur[i]) + (est ? ', estimated' : '') : 'not yet'}&#10;Normal: ${fmt(sm.q50[i])}&#10;8 of 10 seasons: ${fmt(sm.q10[i])} to ${fmt(sm.q90[i])}"/>`; });
   $('season').innerHTML = h + '</svg>';
   $('seasonSpan').textContent = `added up since ${MONTHS[sm.start]}`;
-  $('keyYear').textContent = `This season (${fy})`;
+  $('keyYear').textContent = `This season (${fy}${est ? ', estimated' : ''})`;
 }
 
-// "Small fires": newer-satellite detections per adjusted detection, per calendar month, learned in the years of the newer
-// satellite and applied to every year. The spread of the yearly factors gives the range.
-function ghostModel(){
-  const key = months.some(m => m.raw.snpp) ? 'snpp' : 'n20', seen = months.map((m, t) => [m, t]).filter(([m]) => m.raw[key] > 0 && m.harmonized > 0);
-  const sum = (a, f) => d3.sum(a, f), hs = a => sum(a, ([m]) => m.harmonized);
-  if(hs(seen) < 200) return null;
-  const all = sum(seen, ([m]) => m.raw[key])/hs(seen), k = d3.rollup(seen, v => sum(v, ([m]) => m.raw[key])/hs(v), ([, t]) => monOf(t));
-  const yearly = d3.rollups(seen, v => v.length >= 6 ? sum(v, ([m]) => m.raw[key])/hs(v)/all : NaN, ([, t]) => yearOf(t)).map(d => d[1]).filter(isFinite);
-  return {k, all, lo:d3.min(yearly) ?? 1, hi:d3.max(yearly) ?? 1};
-}
 function renderYears(){
-  const Hv = 140, ih = Hv - Tp - B, [a, b] = yearRange(), ys = YEARS.filter(y => y >= a && y <= b), harm = state.harm;
-  const gm = state.ghost && harm ? ghostModel() : null;
+  const Hv = 140, ih = Hv - Tp - B, [a, b] = yearRange(), ys = YEARS.filter(y => y >= a && y <= b), harm = state.harm, vi = state.unit === 'viirs';
   const rows = ys.map(y => { const ts = d3.range(12).map(m => tOf(y, m)).filter(t => t >= 0 && t < T), ms = ts.map(t => months[t]);
     return {y, n:ms.length, harm:d3.sum(ms, m => m.harmonized), low:d3.sum(ms, m => m.low), high:d3.sum(ms, m => m.high), src:ms.at(-1).source,
-            raw:Object.fromEntries(Object.keys(SENSOR).map(k => [k, d3.sum(ms, m => m.raw[k])])),
-            ghost:gm ? d3.sum(ts, t => months[t].harmonized*(gm.k.get(monOf(t)) ?? gm.all)) : 0}; });
-  const top = d3.max(rows, r => harm ? Math.max(r.high, r.ghost*(gm ? gm.hi : 1)) : d3.sum(Object.values(r.raw))) || 1;
+            est:ts.some(isEst), raw:Object.fromEntries(Object.keys(SENSOR).map(k => [k, d3.sum(ms, m => m.raw[k])]))}; });   // one estimated month makes the year estimated
+  const top = d3.max(rows, r => harm ? Math.max(r.harm, r.high) : d3.sum(Object.values(r.raw))) || 1;
   const sc = d3.scaleLinear().domain([0, top]).nice(3).range([Tp + ih, Tp]), bw = iw/rows.length, x = i => L + i*bw;
   let h = `<svg viewBox="0 0 ${Wv} ${Hv}" role="img" aria-label="Fire detections per year">`;
   sc.ticks(3).forEach(v => { h += `<line class="grid" x1="${L}" x2="${Wv-Rm}" y1="${sc(v)}" y2="${sc(v)}"/><text class="axis" x="${L-6}" y="${sc(v)+4}" text-anchor="end">${sfmt(v)}</text>`; });
@@ -1328,39 +1360,50 @@ function renderYears(){
     const rect = (cls, v0, v1, tipText) => `<rect class="${cls}" x="${x(i) + 1}" width="${Math.max(1, bw - 2)}" y="${sc(v1)}" height="${Math.max(0, sc(v0) - sc(v1))}" data-tip="${tipText}"/>`;
     if(harm){
       const part = r.n < 12 ? ` (${r.n} months)` : '';
-      if(gm && r.ghost > r.harm) h += rect('bar-ghost', r.harm, r.ghost, `${r.y}: with small fires, about ${fmt(r.ghost)} detections&#10;likely ${fmt(r.ghost*gm.lo)} to ${fmt(r.ghost*gm.hi)}. Estimate only.`);
-      h += rect(r.src === 'aqua' ? 'bar-aqua' : r.src === 'terra_scaled' ? 'bar-terra' : 'bar-viirs', 0, r.harm, `${r.y}${part}: ${fmt(r.harm)} adjusted detections` + (r.high > r.low ? `&#10;likely ${fmt(r.low)} to ${fmt(r.high)}` : ''));
+      const rng = r.high > r.low ? `likely ${fmt(r.low)} to ${fmt(r.high)}` : '';
+      h += rect((vi || !['aqua', 'terra_scaled'].includes(r.src) ? 'bar-viirs' : r.src === 'aqua' ? 'bar-aqua' : 'bar-terra') + (r.est ? ' est' : ''), 0, r.harm,
+        `${r.y}${part}: ${fmt(r.harm)} ${unitWord()}` + (r.est ? `&#10;estimated${rng ? ', ' + rng : ''}` : rng ? '&#10;' + rng : ''));
       if(r.high > r.low) h += `<line class="whisk" x1="${x(i) + bw/2}" x2="${x(i) + bw/2}" y1="${sc(r.low)}" y2="${sc(r.high)}"/>`;
     } else { let base = 0; const all = Object.keys(SENSOR).filter(k => r.raw[k]).map(k => `${PLAIN[k]}: ${fmt(r.raw[k])}`).join('&#10;');
       for(const k of Object.keys(SENSOR)){ if(!r.raw[k]) continue; h += rect('bar-' + k, base, base + r.raw[k], `${r.y}&#10;${all}`); base += r.raw[k]; } }
   });
   $('years').innerHTML = h + '</svg>';
-  const sq = (c, tx) => `<span><span class="sq" style="background:${c}"></span>${tx}</span>`;
-  $('yearsUnit').textContent = harm ? 'adjusted detections' : 'as reported, all satellites';
-  $('yearsKey').innerHTML = harm ? sq(C.cool, 'Older satellite (less certain)') + sq(C.accent, 'Reference satellite') + sq(C['fire-mid'], 'Newer satellite (adjusted)') + '<span>White line: likely range</span>'
-    : sq(C.cool, PLAIN.terra) + sq(C.accent, PLAIN.aqua) + sq('#c9662b', PLAIN.snpp) + sq(C['fire-mid'], PLAIN.n20) + '<span>The jump is the new satellite, not more fire.</span>';
-  $('ghostNote').hidden = !state.ghost;
-  $('ghostNote').textContent = !state.ghost ? '' : !harm ? 'Choose "Comparable across years" under Advanced to see this estimate.' : !gm ? 'Too few detections by the newer satellites in this area for an estimate.'
-    : `Dashed bars: about how many detections there would be in every year if small fires were counted too, with the same share as in recent years (about ${gm.all.toFixed(1)} per adjusted detection here). An estimate: in single years the factor was ${d3.format('+.0%')(gm.lo - 1)} to ${d3.format('+.0%')(gm.hi - 1)} from its average.`;
+  const sq = (c, tx, est) => `<span><span class="sq${est ? ' est' : ''}" style="background:${c}"></span>${tx}</span>`;
+  $('yearsUnit').textContent = harm ? unitWord() : 'as reported, all satellites';
+  $('yearsKey').innerHTML = !harm ? sq(C.cool, PLAIN.terra) + sq(C.accent, PLAIN.aqua) + sq('#c9662b', PLAIN.snpp) + sq(C['fire-mid'], PLAIN.n20) + '<span>The jump is the new satellite, not more fire.</span>'
+    : (vi ? sq(C['fire-mid'], 'Measured') + sq(C['fire-mid'], 'Estimated from older satellites', true)
+       : sq(C.cool, 'Older satellite (estimated)', true) + sq(C.accent, 'Reference satellite (measured)') + sq(C['fire-mid'], 'Newer satellites (estimated)', true)) + '<span>White line: likely range</span>';
 }
 
-// Sensor check: in the years both flew, adjusted VIIRS should land on top of measured Aqua.
-// The adjusted values shown here come from tables fitted without the year they are compared in.
+// Sensor check, in the years both flew. Strict record: adjusted VIIRS on top of measured Aqua. Main unit: the estimate from
+// MODIS on top of measured VIIRS. The estimates shown here come from tables fitted without the year they are compared in.
 function renderCheck(){
-  const Hv = 120, ih = Hv - Tp - B, t0 = tAt(SAT.window[0]), t1 = Math.min(T-1, tAt(SAT.window[1])), ts = d3.range(t0, t1 + 1), n = ts.length;
-  const aq = ts.map(t => months[t].raw.aqua), cv2 = ts.map(t => months[t].pred[PKEY]), rw = ts.map(t => months[t].raw[PKEY]);
+  const V = VAL.viirs, v = !!(V && months[0].pred && 'modis' in months[0].pred);   // read from the data, so a unit switch in flight never mixes the two
+  const win = v ? V.window : SAT.window, Hv = 120, ih = Hv - Tp - B, t0 = tAt(win[0]), t1 = Math.min(T-1, tAt(win[1])), ts = d3.range(t0, t1 + 1), n = ts.length;
+  const aq = ts.map(t => v ? months[t].harmonized : months[t].raw.aqua), cv2 = ts.map(t => v ? months[t].pred.modis : months[t].pred[PKEY]), rw = ts.map(t => months[t].raw[PKEY]);
+  $('chkA').textContent = v ? 'VIIRS, measured' : 'Aqua MODIS, measured';
+  $('chkB').textContent = v ? 'Estimate from MODIS Aqua and Terra (not used to fit it)' : 'VIIRS, adjusted (not used to fit it)';
+  $('limits').innerHTML = [v ? `Months before ${monthName(VSTART)} are estimates from the older satellites. They cannot be checked directly.` : 'Since 2022 the adjusted numbers cannot be checked against the reference satellite.',
+    'Clouds hide fires. A cloudy month looks like a quiet month.', 'The last 7 days are first numbers and can change.'].map(s => `<li>${s}</li>`).join('');
+  const tests = v ? ` In hidden-year tests, per 5° tile and month, the estimate was off by ${pct(V.both.error)} from Aqua and Terra together and ${pct(V.terra.error)} from Terra alone.`
+    + (V.twin ? ` Two identical satellites differ by about ${pct(V.twin.raw)}: no method can do better.` : '') : '';
+  $('checkSpan').textContent = `${yearOf(t0)} to ${yearOf(t1)}`;
+  if(v && state.time !== 'all'){   // the estimate exists for all fires only
+    $('check').innerHTML = ''; $('checkLine').textContent = 'This check compares all fires. Choose "All fires" under Only count to see it.' + tests; return;
+  }
   const sc = d3.scaleLinear().domain([0, Math.max(1, d3.max(aq), d3.max(cv2))]).nice(3).range([Tp + ih, Tp]);
   const x = i => L + iw*i/(n - 1), line = d3.line().x((d,i) => x(i)).y(d => sc(d));
-  let h = `<svg viewBox="0 0 ${Wv} ${Hv}" role="img" aria-label="Monthly detections: Aqua measured and VIIRS adjusted">`;
+  let h = `<svg viewBox="0 0 ${Wv} ${Hv}" role="img" aria-label="${v ? 'Monthly detections: VIIRS measured and the estimate from MODIS' : 'Monthly detections: Aqua measured and VIIRS adjusted'}">`;
   sc.ticks(3).forEach(v => { h += `<line class="grid" x1="${L}" x2="${Wv-Rm}" y1="${sc(v)}" y2="${sc(v)}"/><text class="axis" x="${L-6}" y="${sc(v)+4}" text-anchor="end">${sfmt(v)}</text>`; });
   ts.forEach((t, i) => { if(monOf(t) === 0) h += `<text class="axis" x="${x(i)}" y="${Hv-5}" text-anchor="middle">${yearOf(t)}</text>`; });
   h += `<path class="cur" d="${line(aq)}"/><path class="conv" d="${line(cv2)}"/>`;
-  ts.forEach((t, i) => { h += `<rect class="hit" x="${x(i)-iw/(2*(n-1))}" y="${Tp}" width="${iw/(n-1)}" height="${ih}" data-tip="${MON[monOf(t)]} ${yearOf(t)}&#10;Aqua measured: ${fmt(aq[i])}&#10;VIIRS adjusted: ${fmt(cv2[i])}&#10;VIIRS as reported: ${fmt(rw[i])}"/>`; });
+  ts.forEach((t, i) => { h += `<rect class="hit" x="${x(i)-iw/(2*(n-1))}" y="${Tp}" width="${iw/(n-1)}" height="${ih}" data-tip="${MON[monOf(t)]} ${yearOf(t)}&#10;`
+    + (v ? `VIIRS measured: ${fmt(aq[i])}&#10;Estimate from MODIS: ${fmt(cv2[i])}` : `Aqua measured: ${fmt(aq[i])}&#10;VIIRS adjusted: ${fmt(cv2[i])}&#10;VIIRS as reported: ${fmt(rw[i])}`) + '"/>'; });
   $('check').innerHTML = h + '</svg>';
-  $('checkSpan').textContent = `${yearOf(t0)} to ${yearOf(t1)}`;
   const tot = d3.sum(aq), err = tot ? d3.sum(aq, (v, i) => Math.abs(cv2[i] - v))/tot : NaN;
-  $('checkLine').textContent = tot >= 50 ? `In the years both flew, adjusted ${SENSOR[PKEY]} is off by ${pct(err)} of the Aqua total here, month by month. Unadjusted, VIIRS reports ${(d3.sum(rw)/tot).toFixed(1)} times more.`
-    : 'Too few fire detections here to compare the satellites.';
+  $('checkLine').textContent = (tot < 50 ? 'Too few fire detections here to compare the satellites.'
+    : v ? `In the years both flew, the estimate from the older satellites (MODIS) is off by ${pct(err)} of the measured VIIRS total here, month by month.`
+    : `In the years both flew, adjusted ${SENSOR[PKEY]} is off by ${pct(err)} of the Aqua total here, month by month. Unadjusted, VIIRS reports ${(d3.sum(rw)/tot).toFixed(1)} times more.`) + tests;
 }
 
 /* ---------- controls ---------- */
@@ -1371,9 +1414,22 @@ function setPlaying(p){
   if(!p) saveHash();
 }
 const check = (name, v) => { const r = document.querySelector(`input[name=${name}][value=${v}]`); if(r) r.checked = true; };
-function setMode(harm){
-  state.harm = harm; check('counts', harm ? 'harm' : 'raw');
-  if(months){ renderStatic(); renderTime(); } legend(); dirty = true; saveHash();
+// counts: a unit ('viirs', 'aqua') or 'raw'. A new unit reloads the area's months; place, month and view stay.
+function setCounts(v){
+  const unit = v === 'raw' ? state.unit : v, changed = unit !== state.unit;
+  state.harm = v !== 'raw'; state.unit = unit; useUnit();
+  if(changed){ loadMonths(); liveArea = null; loadLive(); loadLook(); if(state.live && !liveCells.has(lcKey())) loadCells(); if(months) renderTime(); }
+  else if(months){ renderStatic(); renderTime(); }
+  legend(); dirty = true; saveHash();
+}
+const countsNow = () => state.harm ? state.unit : 'raw';
+function useUnit(){   // globe grids, colour scale, baseline years, confidence map and texts of the current unit
+  const u = UNIT[state.unit], g = u.grid;
+  Hm = g.h; Nt = g.n; VMAX = g.vmax ??= vmaxOf(g.h); BASE = d3.range(u.base[0], u.base[1] + 1);
+  TR = TRS ? TRS[state.unit] : null;
+  check('counts', countsNow());
+  $('eras').innerHTML = u.eras.map(([c, f, tip, label]) => `<span class="era ${c}" style="flex:${f}" data-tip="${tip}">${label}</span>`).join('');
+  trustScale(); buildAbout(); bump();
 }
 function setView(view){
   if(view === 'trust' && trustOff) view = 'count';   // no confidence map on this server
@@ -1391,30 +1447,31 @@ function setTime(v){
   state.time = v; syncTimeControls();
   if(HAS.night) loadMonths(); else if(months){ renderStatic(); renderTime(); }
   liveArea = null; loadLive(); loadLook();
-  if(state.live && !liveCells.has(v)) loadCells();
+  if(state.live && !liveCells.has(lcKey())) loadCells();
   legend(); dirty = true; saveHash();
 }
 function loadCells(){
-  const tm = state.time;
-  api('api/live/cells' + (tm !== 'all' ? '?time=' + tm : '')).then(r => { liveCells.set(tm, r.cells || []); dirty = true; })
+  const k = lcKey();
+  api('api/live/cells?' + new URLSearchParams(lParam())).then(r => { liveCells.set(k, r.cells || []); dirty = true; })
     .catch(err => { toast('The last 7 days are not available: ' + err.message); if(state.live) setLive(false); });
 }
 function setLive(on){
   if(on && !HAS.live) return;
   state.live = on; if(on) state.pick = false;
   syncTimeControls(); renderTime(); bump();   // the confidence map is hidden in the last 7 days
-  if(on && !liveCells.has(state.time)) loadCells();
+  if(on && !liveCells.has(lcKey())) loadCells();
 }
 function legend(){
   const tm = state.live || gTime() !== 'all' ? {all:'', day:'day ', night:'night '}[state.time] : '', sq = [50, 25, 10, 5, 5][fireLevel] || 50;
+  const est = state.harm && UNIT[state.unit].est(state.t) ? '<span class="lest">Estimated month, not measured</span>' : '';
   $('legend').innerHTML = state.view === 'trust' && !state.live
-    ? !TR ? 'Loading the confidence map…'
-      : `How far off the adjusted monthly count for an area of about ${kmOf(TR.deg)} km was in test years: ` + TRUST.map(s => `<span class="lstep"><span class="box" style="background:${s[1]}"></span>${s[2]}</span>`).join('')
+    ? !TR ? (TRS ? 'No confidence map for this count yet. Rebuilding the data adds it.' : 'Loading the confidence map…')
+      : `How far off the ${state.unit === 'viirs' ? 'monthly estimate from the older satellites' : 'adjusted monthly count'} for an area of about ${kmOf(TR.deg)} km was in test years: ` + TRUST.map(s => `<span class="lstep"><span class="box" style="background:${s[1]}"></span>${s[2]}</span>`).join('')
         + '<span class="lstep"><span class="box hatch"></span>too few fires to test</span>'
     : state.live && fireLevel === 4 ? `Each dot is one ${tm}fire detection in the last 7 days: ` + ['weak', 'medium', 'strong'].map((w, i) => `<span class="lstep"><span class="dotk" style="background:${PTC[i]}"></span>${w}</span>`).join('')
     : state.live ? `<span>Fewer</span><span class="ramp seq"></span><span>More ${tm}fire detections in the last 7 days, per square of about 50 km</span>`
-    : state.view === 'anom' ? `<span>Lower than normal</span><span class="ramp div"></span><span>Higher than normal for ${MONTHS[monOf(state.t)]}, per square of about ${sq} km</span>`
-    : `<span>Fewer</span><span class="ramp seq"></span><span>More ${tm}${unitWord()} per square of about ${sq} km</span>`;
+    : state.view === 'anom' ? `<span>Lower than normal</span><span class="ramp div"></span><span>Higher than normal for ${MONTHS[monOf(state.t)]}, per square of about ${sq} km</span>${est}`
+    : `<span>Fewer</span><span class="ramp seq"></span><span>More ${tm}${unitWord()} per square of about ${sq} km</span>${est}`;
 }
 function toast(msg){ $('toast').textContent = msg; }
 function save(blob, name){ const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }
@@ -1428,7 +1485,7 @@ function saveHash(){
   p.set('a', s.kind === 'world' ? 'world' : s.kind === 'country' ? 'c:' + s.name : s.kind === 'state' ? `s:${s.country}|${s.name}`
     : s.kind === 'box' ? 'b:' + [s.box.w, s.box.s, s.box.e, s.box.n].join(',') : 'p:' + s.polygon.coordinates[0].map(q => q.join(' ')).join(';'));
   if(s.kind === 'box' && s.label) p.set('n', s.label);
-  p.set('t', state.live ? 'live' : ymOf(state.t)); p.set('map', state.view); p.set('only', state.time); p.set('counts', state.harm ? 'adjusted' : 'reported');
+  p.set('t', state.live ? 'live' : ymOf(state.t)); p.set('map', state.view); p.set('only', state.time); p.set('counts', {viirs:'viirs', aqua:'strict', raw:'raw'}[countsNow()]);
   ownHash = '#' + p;
   try { history.replaceState(null, '', ownHash); } catch(e){}
 }
@@ -1439,12 +1496,13 @@ async function restore(){
   try {
     setPlaying(false);
     const v = p.get('map'); setView(['count', 'anom', 'trust'].includes(v) ? v : 'count');
-    const harm = p.get('counts') !== 'reported'; if(harm !== state.harm) setMode(harm);
+    const cn = p.get('counts'), counts = ['raw', 'reported'].includes(cn) ? 'raw' : cn === 'strict' ? 'aqua' : UNITS[0];   // old links: adjusted, reported
+    if(counts !== countsNow()) setCounts(counts);
     const tt = p.get('t') || '', f = p.get('only'), live = tt === 'live' && HAS.live;
     if(/^\d{4}-\d{2}$/.test(tt)){ state.t = clamp(tAt(tt), 0, T-1); state.pick = state.t !== T-1; }
     if(live !== state.live) setLive(live);
     state.time = ['day', 'night'].includes(f) && (HAS.night || live) ? f : 'all';   // the area selection below reloads everything for it
-    syncTimeControls(); if(state.live && !liveCells.has(state.time)) loadCells();
+    syncTimeControls(); if(state.live && !liveCells.has(lcKey())) loadCells();
     renderTime();
     if(a === 'world'){ clearPlace(); return true; }
     if(a.startsWith('c:')){ const c = COUNTRIES.indexOf(a.slice(2)); if(c >= 0){ selectCountry(c); return true; } }
@@ -1464,7 +1522,7 @@ async function restore(){
 /* ---------- downloads ---------- */
 async function downloadCsv(){
   const [a, b] = yearRange(), [url, opts] = request({...mParam(), start:`${a}-01`, end:`${b}-12`, format:'csv'});
-  try { const r = await fetch(url, opts); if(!r.ok) throw new Error(r.statusText); save(await r.blob(), `firepulse_${slug()}_${a}-${b}.csv`); toast('Saved the monthly table.'); }
+  try { const r = await fetch(url, opts); if(!r.ok) throw new Error(r.statusText); save(await r.blob(), `firepulse_${slug()}_${a}-${b}.csv`); toast('Saved the monthly table. ' + unitSentence()); }
   catch(err){ toast('The download failed: ' + err.message); }
 }
 function downloadDetections(){
@@ -1525,7 +1583,7 @@ function briefing(){
     g.strokeStyle = C['fire-mid']; g.beginPath(); sm.cur.forEach((v, i) => { if(!isNaN(v)) g.lineTo(X(i), Y(v)); }); g.stroke();
     g.fillStyle = C.muted; font(400, 13); g.textAlign = 'center';
     for(let i=0;i<12;i++) g.fillText(MON[(sm.start + i) % 12][0], X(i), y0 + chartH + 18);
-    g.textAlign = 'left'; wrapText(g, `Orange: this season. Dashed: normal. Band: 8 of 10 seasons. Top: ${fmt(top)} adjusted detections.`, chartX, y0 + chartH + 40, chartW, 17);
+    g.textAlign = 'left'; wrapText(g, `Orange: this season. Dashed: normal. Band: 8 of 10 seasons. Top: ${fmt(top)} ${unitWord()}.`, chartX, y0 + chartH + 40, chartW, 17);
   }
   g.fillStyle = C.fg; font(600, 18, 'd'); g.fillText(`Fire calendar, ${a} to ${b}`, pad, calY - 14);
   g.fillStyle = C.muted; font(400, 13); g.textAlign = 'center'; MON.forEach((m, i) => g.fillText(m, pad + 56 + i*cw + cw/2, calY + 10));
@@ -1536,7 +1594,7 @@ function briefing(){
       if(t === state.t){ g.strokeStyle = C.fg; g.lineWidth = 2; g.strokeRect(pad + 56 + m*cw + 1, yy + 1, cw - 2, ch - 2); } }
   }
   g.textAlign = 'left'; g.fillStyle = C.muted; font(400, 13);
-  wrapText(g, 'Source: NASA FIRMS fire detections (MODIS and VIIRS), adjusted so all years compare. Clouds hide fires. The last 7 days are first numbers and can change. Made with Fire Pulse.', pad, Hb - 46, Wb - 2*pad, 18);
+  wrapText(g, `Source: NASA FIRMS fire detections. ${unitSentence()} Clouds hide fires. The last 7 days are first numbers and can change. Made with Fire Pulse.`, pad, Hb - 46, Wb - 2*pad, 18);
   c.toBlob(blob => { if(blob){ save(blob, `firepulse_briefing_${slug()}.png`); toast('Saved the briefing as an image.'); } else toast('The briefing could not be made.'); });
 }
 function copyLink(){
@@ -1550,10 +1608,20 @@ function buildAbout(){
   const sats = Object.entries(VAL.satellites), head = sats.map(([s, v]) => `<th>${SENSOR[s.toLowerCase()]}<br>${v.window[0].slice(0,4)}–${v.window[1].slice(0,4)}</th>`).join('');
   const line = (label, key, pick) => row(label, sats.map(([, v]) => v.overall[key] != null ? pct(v.overall[key]) : '–'), pick);
   const gaps = (VAL.aqua_gaps || []).filter(([a, b]) => (new Date(b) - new Date(a))/864e5 >= 2);
+  const V = UNITS.includes('viirs') ? VAL.viirs : null, vi = V && state.unit === 'viirs', bA = UNIT.aqua.base, bV = V && UNIT.viirs.base;
+  const yrs = b => `${b[0]} to ${b[1]}`, refName = V ? {n20:'NOAA-20', snpp:'Suomi NPP'}[String(V.reference).toLowerCase()] || V.reference : '';
   $('aboutBody').innerHTML = `
   <h2>How Fire Pulse works</h2>
-  <p>Satellites have seen the heat of fires since 2000. Each place where a satellite saw a fire is a fire detection. The record comes from two kinds of instruments. MODIS (on the Terra and Aqua satellites, 1 km pixels) is the long series and is close to retirement. VIIRS (375 m pixels, since 2012) sees many small fires that MODIS misses. Side by side, the counts jump when VIIRS starts, for no real reason. Fire Pulse adjusts all years so they compare.</p>
-  <h3>The method</h3>
+  <p>Satellites have seen the heat of fires since 2000. Each place where a satellite saw a fire is a fire detection. The record comes from two kinds of instruments. MODIS (on the Terra and Aqua satellites, 1 km pixels) is the long series and is close to retirement. VIIRS (375 m pixels, since 2012) sees many small fires that MODIS misses. Side by side, the counts jump when VIIRS starts, for no real reason. Fire Pulse ${V ? 'makes all years comparable in two ways' : 'adjusts all years so they compare'}.</p>
+  ${V ? `<h3>Two ways to count</h3>
+  <ul>
+    <li><b>${UNIT.viirs.label} (the main count).</b> What VIIRS on ${refName} reports. Measured from ${monthName(VSTART)}${V.ref_start && V.ref_start.slice(0, 7) !== V.start.slice(0, 7) ? ` (until ${monthName(tAt(V.ref_start))} from Suomi NPP, matched to ${refName})` : ''}. Earlier months are estimated from MODIS: per region (5° tiles) and calendar month, the ratio of VIIRS to MODIS detections in the years both flew. When Aqua and Terra both recorded, the estimate weighs Aqua ${pct(V.weight_aqua)} and Terra ${pct(1 - V.weight_aqua)}; before August 2002 it uses Terra alone.</li>
+    <li><b>${UNIT.aqua.label}.</b> What Aqua MODIS would have reported: fewer small fires. Measured ${monthName(AQUA)} to ${monthName(MODEL - 1)}, converted before and after with the method below.</li>
+  </ul>
+  <p>Why VIIRS is the main count: Aqua, the reference of the strict record, ends about 2027. After that every new month of the strict record is a conversion nobody can check. VIIRS satellites keep flying, so new months stay measured.</p>
+  <h3>Does the main count work?</h3>
+  <p>Each year when both kinds flew is hidden in turn. The ratios are learned from the other years, and the estimate from MODIS is compared with measured VIIRS in the hidden year. Error per 5° tile and month (lower is better): ${pct(V.both.error)} from Aqua and Terra together, ${pct(V.aqua.error)} from Aqua alone, ${pct(V.terra.error)} from Terra alone.${V.twin ? ` Two identical VIIRS instruments (Suomi NPP and NOAA-20) differ by ${pct(V.twin.raw)} as reported: no method can do better than that.` : ''}</p>
+  <h3>The strict long record</h3>` : '<h3>The method</h3>'}
   <ol>
     <li><b>Same fires only.</b> Keep detections marked as vegetation fire. Drop MODIS confidence below 30 % and VIIRS "low" confidence.</li>
     <li><b>One reference.</b> Aqua MODIS passes at the same local time as VIIRS, so every number is what Aqua would have reported. These are the adjusted detections.</li>
@@ -1562,8 +1630,8 @@ function buildAbout(){
     <li><b>One record.</b> Terra scaled to Aqua before August 2002 (the older satellite), Aqua as measured until 2021 (the reference satellite), adjusted ${SENSOR[PKEY]} from 2022 (the newer satellite), when Aqua's orbit drifts. Days when Aqua did not record are found from the data and filled.</li>
   </ol>
   <h3>Normal, and the season</h3>
-  <p>Normal for a month is the middle value of that calendar month in 2003 to 2020. The fire season of an area starts after its quietest month. "Season so far" adds up the detections since then and compares them with the same running total in 2003 to 2020.</p>
-  <h3>Does it work?</h3>
+  <p>Normal for a month is the middle value of that calendar month in the normal years: ${V ? `${yrs(bV)} for the main count (measured years only), ${yrs(bA)} for the strict record` : yrs(bA)}. The fire season of an area starts after its quietest month. "Season so far" adds up the detections since then and compares them with the same running total in the normal years.</p>
+  <h3>Does ${V ? 'the strict record' : 'it'} work?</h3>
   <p>Each year when both flew is hidden in turn. The tables are learned from the other years and the adjusted VIIRS is compared with real Aqua in the hidden year. Error per 5° tile and month (lower is better):</p>
   <table><tr><th>Adjustment</th>${head}</tr>
     ${line('None (VIIRS as reported)', 'raw')}${line('One global factor', 'global_factor')}${line('Monthly ratio per region', 'ratio')}${line('Conversion tables (used)', 'table', true)}
@@ -1572,18 +1640,19 @@ function buildAbout(){
   ${VAL.twin ? ` Two identical VIIRS instruments (Suomi NPP and NOAA-20) disagree by ${pct(VAL.twin.overlap)} after adjustment in the overlap years, and by ${pct(VAL.twin.after)} after 2021. No adjustment can beat the first number.` : ''}
   Choose "Confidence in the numbers" under Show on the map to see the error by place.</p>
   ${TR ? `<h3>The confidence map</h3>
-  <p>The map splits the land into squares of about ${kmOf(TR.deg)} km. Each square shows how far the adjusted monthly count was from real Aqua in the test years ${TR.years[0]} to ${TR.years[1]}, with ${TR.satellites.map(s => SENSOR[s.toLowerCase()] || s).join(' and ')} tested together. ${TR.left_out.length ? `${TR.left_out.length} months when Aqua did not record are left out. ` : ''}Hatched squares had fewer than ${fmt(TR.min_n)} detections in those years: too few to test.</p>
+  <p>The map splits the land into squares of about ${kmOf(TR.deg)} km. ${vi ? `For the main count, each square shows how far the monthly estimate from MODIS was from measured VIIRS in the test years ${TR.years[0]} to ${TR.years[1]}.`
+    : `Each square shows how far the adjusted monthly count was from real Aqua in the test years ${TR.years[0]} to ${TR.years[1]}, with ${(TR.satellites || []).map(s => SENSOR[s.toLowerCase()] || s).join(' and ')} tested together.`} ${TR.left_out.length ? `${TR.left_out.length} months when a satellite did not record are left out. ` : ''}Hatched squares had fewer than ${fmt(TR.min_n)} detections in those years: too few to test.</p>
   <p>The number depends on the size of the area. In a larger area the errors of small places partly cancel out, so its count is more exact. The same test for squares of other sizes:</p>
   <table><tr><th>Square of about</th><th>Monthly count off by</th></tr>${TR.by_size.map(s => row(`${fmt(kmOf(s.deg))} km`, [pct(s.err)], s.deg === TR.deg)).join('')}</table>` : ''}
   ${gaps.length ? `<p>Aqua outages found and filled: ${gaps.slice(0, 8).map(([a, b]) => `${a} to ${b}`).join('; ')}${gaps.length > 8 ? `; and ${gaps.length - 8} more` : ''}.</p>` : ''}
   <h3>The last 7 days</h3>
-  <p>The FIRMS near-real-time file of ${SENSOR.n20}, adjusted with the same tables. Times are local solar time. A strong fire releases more heat than a set level. "Burning N of 7 days" counts the days with a detection in the same 5 km square. These are first numbers and can change.</p>
+  <p>The FIRMS near-real-time file of ${SENSOR.n20}${V ? '. With the main count, the cleaned detections themselves; with the strict record, converted with the same tables' : ', adjusted with the same tables'}. Times are local solar time. A strong fire releases more heat than a set level. "Burning N of 7 days" counts the days with a detection in the same 5 km square. These are first numbers and can change.</p>
   <h3>What to keep in mind</h3>
   <ul>
     <li>A fire detection is a satellite pixel with the heat of a fire, not one fire. A large fire gives many detections.</li>
     <li>Counts are not corrected for clouds. A cloudy month looks like a quiet month.</li>
-    <li>After 2021 the adjustment cannot be checked against Aqua, because its orbit drifts.</li>
-    <li>Small fires that MODIS never saw before VIIRS cannot be recovered. The "small fires" bars are a labeled estimate.</li>
+    ${V ? `<li>In the main count, the months before ${monthName(VSTART)} are estimates. They cannot be checked directly, and small fires that only VIIRS sees are added by a ratio, not seen.</li>` : ''}
+    <li>After 2021 the ${V ? 'strict record' : 'adjustment'} cannot be checked against Aqua, because its orbit drifts.</li>
     <li>The months before August 2002 come from Terra, which passes in the morning. They are less certain.</li>
     <li>The monthly record ends in ${MONTHS[monOf(T-1)]} ${yearOf(T-1)}, the last complete yearly archive.</li>
   </ul>
@@ -1593,7 +1662,7 @@ function buildAbout(){
 
 /* ---------- wiring ---------- */
 document.querySelectorAll('input[name=view]').forEach(r => r.addEventListener('change', () => setView(r.value)));
-document.querySelectorAll('input[name=counts]').forEach(r => r.addEventListener('change', () => setMode(r.value === 'harm')));
+document.querySelectorAll('input[name=counts]').forEach(r => r.addEventListener('change', () => setCounts(r.value)));
 document.querySelectorAll('input[name=time]').forEach(r => r.addEventListener('change', () => setTime(r.value)));
 $('strong').onchange = e => { state.strong = e.target.checked; dirty = true; lastCheck = 0; };
 $('cGrid').onclick = $('cRings').onclick = e => { state.cal = e.currentTarget.id === 'cGrid' ? 'grid' : 'rings';
@@ -1619,7 +1688,6 @@ $('speed').onchange = e => { speed = +e.target.value; };
 $('tRange').addEventListener('input', e => { setPlaying(false); setT(+e.target.value); });
 $('dlCsv').onclick = downloadCsv; $('dlHot').onclick = downloadDetections; $('dlBrief').onclick = briefing; $('copyLink').onclick = copyLink;
 $('yFrom').onchange = $('yTo').onchange = () => { if(months){ renderCalendar(); renderYears(); } };
-$('ghost').onclick = () => { state.ghost = !state.ghost; $('ghost').setAttribute('aria-pressed', state.ghost); if(months) renderYears(); };
 $('aboutBtn').onclick = $('trustAbout').onclick = () => $('about').showModal();
 $('boxDraw').onclick = () => setDrawMode(drawMode === 'box' ? null : 'box');
 $('polyDraw').onclick = () => setDrawMode(drawMode === 'poly' ? null : 'poly');
@@ -1655,7 +1723,9 @@ addEventListener('hashchange', () => { if(location.hash !== ownHash) restore(); 
 
 $('wLive').hidden = !HAS.live;
 $('strongWrap').hidden = !HAS.live;
-buildAbout(); syncTimeControls(); legend(); loadPB(); loadTrust();
+$('cViirs').hidden = !UNITS.includes('viirs');
+$('hViirs').textContent = UNIT.viirs.help; $('hAqua').textContent = UNIT.aqua.help;
+useUnit(); syncTimeControls(); legend(); loadPB(); loadTrust();
 resize(); setPlaying(false); renderTime();
 requestAnimationFrame(tick);
 if(!(await restore())) select({kind:'world', name:'Earth'}, null).then(() => { spin = !reduced; });

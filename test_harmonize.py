@@ -5,6 +5,7 @@ import json
 import math
 import random
 import struct
+from pathlib import Path
 
 import duckdb
 import pytest
@@ -101,6 +102,38 @@ def test_frp_ratio_recovers_known_factor():
     assert est == pytest.approx(actual, rel=1e-4)
 
 
+def test_cal5_moves_aqua_only_pixels_to_their_tile():
+    """Two 5 degree tiles in one 20 degree tile, the same VIIRS-Aqua relation, but Aqua-only pixels in tile 1 alone.
+    The 20 degree calibration spreads them over both; cal5 gives each tile its own total. Tile 2 is too small and keeps factor 1."""
+    con = duckdb.connect()
+    con.execute("""CREATE TABLE v AS SELECT x AS cell_x, 0 AS cell_y, DATE '2019-03-01' + CAST(d + 366 * y AS INT) AS local_date, 'D' AS daynight,
+                   1 AS n_pixels, CAST(15 AS FLOAT) AS frp_sum, false AS sat_flag FROM range(200) r(x), range(30) s(d), range(2) t(y)""")
+    con.execute("""CREATE TABLE a AS SELECT cell_x, cell_y, local_date, daynight, 1 AS n_pixels FROM v WHERE cell_x % 2 = 0
+                   UNION ALL SELECT 100 + x, 50, DATE '2019-03-01' + CAST(d + 366 * y AS INT), 'D', 1 FROM range(50) r(x), range(30) s(d), range(2) t(y)""")
+    con.execute("INSERT INTO v SELECT 200 + x, 0, DATE '2019-03-01', 'D', 1, 15, false FROM range(5) r(x)")
+    con.execute("INSERT INTO a SELECT 200 + x, 0, DATE '2019-03-01', 'D', 5 FROM range(5) r(x)")
+    H.fit(con, "f", "v", "a", "year(local_date) = 2019")
+    factor = dict(con.execute("SELECT t5x, a / e FROM f_cal5").fetchall())
+    assert factor[0] == pytest.approx(2 / 3, rel=1e-2) and factor[1] == pytest.approx(4 / 3, rel=1e-2)   # cal alone gives 1.5 to both
+    got = dict(con.execute(f"SELECT t5x, sum(est_table) FROM ({H.apply('f', 'v', 'year(local_date) = 2020')}) GROUP BY 1").fetchall())
+    assert got[0] == pytest.approx(1500, rel=1e-3) and got[1] == pytest.approx(3000, rel=1e-3)   # Aqua pixels of 2020 per tile
+    small = "cell_x >= 200"
+    assert con.execute(f"SELECT sum(est_table) FROM ({H.apply('f', 'v', small)})").fetchone()[0] == pytest.approx(
+        con.execute(f"SELECT sum(est_table) FROM ({H._apply('f', 'v', small)})").fetchone()[0])
+
+
+def test_fit_up_ratio_and_fallback():
+    """MODIS -> VIIRS: a dense tile keeps its own ratio of 3; a sparse tile with its own ratio of 10 takes the 20 degree ratio."""
+    con = duckdb.connect()
+    con.execute("""CREATE TABLE m AS SELECT x AS cell_x, 0 AS cell_y, DATE '2019-03-01' + CAST(d AS INT) AS local_date, 'D' AS daynight, 1 AS n_pixels
+                   FROM range(100) r(x), range(30) s(d) UNION ALL SELECT 100 + x, 0, DATE '2019-03-01', 'D', 1 FROM range(10) r(x)""")
+    con.execute("CREATE TABLE v AS SELECT cell_x, cell_y, local_date, daynight, 3 * n_pixels AS n_pixels FROM m WHERE cell_x < 100 "
+                "UNION ALL SELECT cell_x, cell_y, local_date, daynight, 10 FROM m WHERE cell_x >= 100")
+    H.fit_up(con, "u", "m", "v", "TRUE")
+    got = dict(con.execute(f"SELECT t5x, sum(est) / sum(n_pixels) FROM ({H.apply_up('u', 'm', 'TRUE')}) GROUP BY 1").fetchall())
+    assert got[0] == pytest.approx(3) and got[1] == pytest.approx((9000 + 100) / 3010)
+
+
 def hotspots(con, rows):
     con.execute("""CREATE OR REPLACE TABLE h (latitude FLOAT, longitude FLOAT, acq_date DATE, acq_time SMALLINT,
                    satellite VARCHAR, confidence VARCHAR, frp FLOAT, daynight VARCHAR, type TINYINT, country VARCHAR)""")
@@ -119,17 +152,15 @@ def test_local_date_and_cleaning():
     assert con.execute(f"SELECT n_pixels FROM ({H.cell_pass_sql('h', 'N20')})").fetchone()[0] == 2
 
 
-@pytest.fixture(scope="module")
-def root(tmp_path_factory):
-    """A small fake record run through the real pipeline: Terra-only, Aqua, overlap and model years."""
-    root, rng, con = tmp_path_factory.mktemp("data"), random.Random(2), duckdb.connect()
+def fake_record(root, record):
+    """Write fake hotspot files for (sensor, satellites, years, rows per year) and run the real pipeline on them."""
+    rng, con = random.Random(2), duckdb.connect()
 
     def year_rows(year, sats, n):
         return [(19 + rng.random() * 2, -101 + rng.random() * 2, f"{year}-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}",
-                 rng.choice((800, 2000)), sat, "n" if sat == "N20" else "80", rng.random() * 50, rng.choice("DN"), 0, "Testland")
+                 rng.choice((800, 2000)), sat, "n" if sat in ("N20", "SNPP") else "80", rng.random() * 50, rng.choice("DN"), 0, "Testland")
                 for sat in sats for _ in range(n)]
-    for sensor, sats, years, n in (("modis", ("Terra",), (2001,), 400), ("modis", ("Terra", "Aqua"), (2005, 2019, 2020, 2021, 2022), 400),
-                                   ("viirs-jpss1", ("N20",), (2018, 2019, 2020, 2021, 2022), 2000)):
+    for sensor, sats, years, n in record:
         for year in years:
             hotspots(con, year_rows(year, sats, n))
             out = root / "hotspots" / sensor / f"{year}.parquet"
@@ -137,6 +168,22 @@ def root(tmp_path_factory):
             con.execute(f"COPY h TO '{out.as_posix()}' (FORMAT parquet)")
     pipeline.build(root)
     return root
+
+
+@pytest.fixture(scope="module")
+def root(tmp_path_factory):
+    """A small fake record run through the real pipeline: Terra-only, Aqua, overlap and model years."""
+    return fake_record(tmp_path_factory.mktemp("data"), (
+        ("modis", ("Terra",), (2001,), 400), ("modis", ("Terra", "Aqua"), (2005, 2019, 2020, 2021, 2022), 400),
+        ("viirs-jpss1", ("N20",), (2018, 2019, 2020, 2021, 2022), 2000)))
+
+
+@pytest.fixture(scope="module")
+def root2(tmp_path_factory):
+    """The same with two VIIRS satellites: Suomi NPP from 2015 with half the detections of NOAA-20, NOAA-20 from 2019."""
+    return fake_record(tmp_path_factory.mktemp("data2"), (
+        ("modis", ("Terra", "Aqua"), (2005, 2015, 2019, 2020, 2021), 400),
+        ("viirs-snpp", ("SNPP",), (2015, 2019, 2020, 2021), 1000), ("viirs-jpss1", ("N20",), (2019, 2020, 2021), 2000)))
 
 
 def test_totals_are_conserved(root):
@@ -175,16 +222,65 @@ def test_night_and_frp(root):
     assert folds["overall"]["frp"] >= 0 and all("frp" in f for f in folds["folds"])
 
 
-def test_globe_has_three_grids(root):
-    blob = gzip.decompress((root / "serve" / "globe.bin.gz").read_bytes())
+def globe(serve):
+    """The header and the grids of serve/globe.bin.gz, after checking the file length."""
+    blob = gzip.decompress((serve / "globe.bin.gz").read_bytes())
     n = struct.unpack("<I", blob[:4])[0]
     head, pad = json.loads(blob[4:4 + n]), lambda k: k + (-k % 4)
-    assert head["grids"] == ["harm", "raw", "night"]
-    size = 2 * head["units"] * head["months"]
-    assert len(blob) == pad(4 + n) + 4 * head["units"] + pad(2 * head["units"]) + 3 * pad(size)
-    off = pad(4 + n) + 4 * head["units"] + pad(2 * head["units"])
-    harm, night = (memoryview(blob[off + i * pad(size):off + i * pad(size) + size]).cast("H") for i in (0, 2))
-    assert sum(night) > 0 and all(b <= a for a, b in zip(harm, night))
+    size, off = 2 * head["units"] * head["months"], pad(4 + n) + 4 * head["units"] + pad(2 * head["units"])
+    assert len(blob) == off + len(head["grids"]) * pad(size)
+    return head, {g: memoryview(blob[off + i * pad(size):off + i * pad(size) + size]).cast("H") for i, g in enumerate(head["grids"])}
+
+
+def test_globe_has_five_grids(root):
+    head, g = globe(root / "serve")
+    assert head["grids"] == ["harm", "raw", "night", "vharm", "vnight"]
+    assert sum(g["night"]) > 0 and all(b <= a for a, b in zip(g["harm"], g["night"]))
+    assert sum(g["vnight"]) > 0 and all(b <= a for a, b in zip(g["vharm"], g["vnight"]))
+
+
+def viirs_units(serve):
+    """Checks of the VIIRS-unit record that hold for every build; returns validation.json["viirs"]."""
+    con, v = duckdb.connect(), json.loads((serve / "validation.json").read_text())["viirs"]
+    con.execute(f"CREATE VIEW m AS SELECT * FROM read_parquet('{serve.as_posix()}/monthly.parquet')")
+    ref = v["reference"].lower()
+    assert con.execute(f"SELECT count(*) FROM m WHERE month >= DATE '{v['ref_start']}' AND abs(vharm - raw_{ref}) > 1e-6").fetchone()[0] == 0
+    assert con.execute("SELECT count(*) FROM m WHERE vharm_night < -1e-9 OR vharm_night > vharm + 1e-6 OR vpred < 0").fetchone()[0] == 0
+    assert con.execute("SELECT count(*) FROM m WHERE month > DATE '2021-12-31' AND vpred <> 0").fetchone()[0] == 0
+    assert con.execute(f"SELECT sum(vharm) > 0 AND sum(vharm_night) > 0 FROM m WHERE month < DATE '{v['start']}'").fetchone()[0]
+    country = con.execute(f"SELECT sum(vharm), sum(vpred) FROM read_parquet('{serve.as_posix()}/monthly_country.parquet')").fetchone()
+    assert country == pytest.approx(con.execute("SELECT sum(vharm), sum(vpred) FROM m").fetchone())
+    for k in ("both", "aqua", "terra"):
+        assert 0 < v[k]["error"] < 1 and v[k]["range"]
+    assert 0 < v["both"]["night"] < 1 and v["both"]["folds"] and v["both"]["tiles"] and v["start"] <= v["ref_start"]
+    t = json.loads((serve / "trust.json").read_text())["viirs"]
+    assert len({len(t[k]) for k in ("ux", "uy", "n", "err", "raw")}) == 1 and min(t["err"]) >= 0
+    return v
+
+
+def test_viirs_units(root):
+    v = viirs_units(root / "serve")
+    assert v["start"] == v["ref_start"] and "twin" not in v
+
+
+def test_two_viirs_satellites(root2):
+    """Before NOAA-20, VIIRS units are Suomi NPP scaled to NOAA-20 (about twice its count in the fake record)."""
+    v = viirs_units(root2 / "serve")
+    assert v["start"] < v["ref_start"] and v["reference"] == "N20"
+    assert 0 <= v["twin"]["scaled"] < v["twin"]["raw"] and v["twin"]["range"]
+    vharm, snpp = duckdb.connect().execute(f"""SELECT sum(vharm), sum(raw_snpp) FROM read_parquet('{(root2 / "serve").as_posix()}/monthly.parquet')
+                                               WHERE month >= DATE '{v["start"]}' AND month < DATE '{v["ref_start"]}'""").fetchone()
+    assert vharm == pytest.approx(2 * snpp, rel=0.1)
+
+
+MX = Path(__file__).parent / "data/mx/serve"
+
+
+@pytest.mark.skipif(not (MX / "monthly.parquet").exists(), reason="needs data/mx")
+def test_mexico_viirs_units():
+    viirs_units(MX)
+    head, g = globe(MX)
+    assert head["grids"] == ["harm", "raw", "night", "vharm", "vnight"] and all(b <= a for a, b in zip(g["vharm"], g["vnight"]))
 
 
 def test_api_calendar(root, monkeypatch):
@@ -193,7 +289,9 @@ def test_api_calendar(root, monkeypatch):
     import app
     client = TestClient(importlib.reload(app).app)
     total = lambda bbox: sum(m["harmonized"] for m in client.get("/api/calendar", params={"bbox": bbox}).json()["months"])
-    months = client.get("/api/calendar", params={"bbox": "-101,19,-99,21"}).json()["months"]
+    main = client.get("/api/calendar", params={"bbox": "-101,19,-99,21"}).json()   # the default unit is VIIRS: the newest month is measured
+    assert main["unit"] == "viirs" and main["months"][-1]["source"] == "n20" and main["months"][-1]["measured"] and not main["months"][0]["measured"]
+    months = client.get("/api/calendar", params={"bbox": "-101,19,-99,21", "unit": "aqua"}).json()["months"]
     assert [m["month"] for m in months][:2] == ["2000-11", "2000-12"] and len(months) == len({m["month"] for m in months})
     assert months[-1]["month"] == "2022-12" and months[-1]["source"] == "n20_model" and months[-1]["low"] <= months[-1]["harmonized"]
     assert total("-101,19,-99,21") == pytest.approx(total("-101,19,-100,21") + total("-100,19,-99,21"), abs=1)
@@ -211,7 +309,7 @@ def test_api_calendar(root, monkeypatch):
     head = json.loads(blob[4:4 + struct.unpack("<I", blob[:4])[0]])
     pad = lambda n: n + (-n % 4)
     assert head["months"] == 266 and head["countries"] == ["Testland"]   # Nov 2000 to Dec 2022
-    assert len(blob) == pad(4 + struct.unpack("<I", blob[:4])[0]) + 4 * head["units"] + pad(2 * head["units"]) + 3 * pad(2 * head["units"] * 266)
+    assert len(blob) == pad(4 + struct.unpack("<I", blob[:4])[0]) + 4 * head["units"] + pad(2 * head["units"]) + 5 * pad(2 * head["units"] * 266)
     assert client.get("/api/calendar", params={"bbox": "5,5,1,1"}).status_code == 422
     assert "latitude,longitude" in client.get("/api/hotspots.csv", params={"bbox": "-101,19,-99,21", "start": "2019-01-01", "end": "2019-12-31"}).text
 

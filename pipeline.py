@@ -150,8 +150,8 @@ def validate(con, sat, window):
 
 
 def pack_globe(serve):
-    """serve/globe.parquet -> serve/globe.bin.gz: every 0.5 degree cell and month as three Uint16 grids
-    (harmonized, raw, night part of harmonized). The page loads it once and can animate 25 years without asking for each month."""
+    """serve/globe.parquet -> serve/globe.bin.gz: every 0.5 degree cell and month as five Uint16 grids
+    (harmonized, raw, night part of harmonized, the same two in VIIRS units). The page loads it once and can animate 25 years without asking for each month."""
     con, s = duckdb.connect(), serve.as_posix()
     con.execute(f"CREATE TEMP TABLE g AS SELECT * FROM read_parquet('{s}/globe.parquet')")
     countries = [r[0] for r in con.execute(f"SELECT country FROM read_parquet('{s}/countries.parquet') ORDER BY 1").fetchall()]
@@ -164,25 +164,27 @@ def pack_globe(serve):
                  GROUP BY ALL) k ON k.gx = g.gx AND k.gy = g.gy""")
     cells = con.execute("SELECT gx, gy, country FROM c ORDER BY u").fetchall()
     units, months = len(cells), con.execute("SELECT datediff('month', DATE '2000-11-01', max(month)) + 1 FROM g").fetchone()[0]
-    harm, raw, night = (memoryview(bytearray(2 * units * months)).cast("H") for _ in range(3))
-    cur = con.execute("""SELECT c.u, datediff('month', DATE '2000-11-01', g.month), CAST(least(round(g.harm), 65535) AS INT),
-                                CAST(least(g.raw_modis + g.raw_viirs, 65535) AS INT), CAST(least(round(g.harm_night), 65535) AS INT)
-                         FROM g JOIN c ON c.gx = g.gx AND c.gy = g.gy""")
+    grids = {"harm": "round(g.harm)", "raw": "g.raw_modis + g.raw_viirs", "night": "round(g.harm_night)",
+             "vharm": "round(g.vharm)", "vnight": "round(g.vharm_night)"}
+    data = [memoryview(bytearray(2 * units * months)).cast("H") for _ in grids]
+    cur = con.execute(f"""SELECT c.u * {months} + datediff('month', DATE '2000-11-01', g.month),
+                                 {', '.join(f'CAST(least({x}, 65535) AS INT)' for x in grids.values())}
+                          FROM g JOIN c ON c.gx = g.gx AND c.gy = g.gy""")
     while chunk := cur.fetchmany(200_000):
-        for u, t, h, r, n in chunk:
-            harm[u * months + t], raw[u * months + t], night[u * months + t] = h, r, n
+        for i, *values in chunk:
+            for grid, x in zip(data, values):
+                grid[i] = x
     index = {name: i for i, name in enumerate(countries)}
     head = json.dumps({"units": units, "months": months, "first": "2000-11", "res": 0.5, "ncol": 720, "countries": countries,
-                       "grids": ["harm", "raw", "night"]}).encode()
+                       "grids": list(grids)}).encode()
     pad = lambda b: b + b"\0" * (-len(b) % 4)   # the page reads typed arrays, which must start on 4-byte offsets
     part = serve / "globe.bin.part"
     with gzip.open(part, "wb", compresslevel=6) as f:
         f.write(pad(struct.pack("<I", len(head)) + head))
         f.write(array("I", [(gy + 180) * 720 + gx + 360 for gx, gy, _ in cells]).tobytes())
         f.write(pad(array("H", [index.get(c, 65535) for _, _, c in cells]).tobytes()))
-        f.write(pad(harm.tobytes()))
-        f.write(pad(raw.tobytes()))
-        f.write(pad(night.tobytes()))
+        for grid in data:
+            f.write(pad(grid.tobytes()))
     os.replace(part, serve / "globe.bin.gz")
 
 
@@ -221,41 +223,56 @@ TRUST_SIZES = (20, 10, 5, 2, 1, 0.5)                 # unit sizes for by_size: t
 
 
 def trust_cells(root):
-    """serve/trust.json: held-out error of the adjusted count per unit of TRUST_DEG degrees, tests of all VIIRS satellites pooled.
-    Months that hold an Aqua outage day are left out (Aqua is the truth there). Needs serve/monthly.parquet and validation.json."""
+    """serve/trust.json: held-out error of the adjusted count per unit of TRUST_DEG degrees, tests of all VIIRS satellites pooled,
+    and under "viirs" the same for VIIRS units (MODIS estimate against measured VIIRS).
+    Months that hold an Aqua outage day (and for "viirs" a Terra outage day) are left out. Needs serve/monthly.parquet and validation.json."""
     serve = root / "serve"
     val = json.loads((serve / "validation.json").read_text())
     sats = {s: v["window"] for s, v in val["satellites"].items()}
-    gaps = set()
-    for a, b in val["aqua_gaps"]:
-        y, m = int(a[:4]), int(a[5:7])
-        while (y, m) <= (int(b[:4]), int(b[5:7])):
-            gaps.add(f"{y}-{m:02d}")
-            y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+
+    def months(ranges):
+        out = set()
+        for a, b in ranges:
+            y, m = int(a[:4]), int(a[5:7])
+            while (y, m) <= (int(b[:4]), int(b[5:7])):
+                out.add(f"{y}-{m:02d}")
+                y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+        return out
     con = connect(root)
     con.execute(f"CREATE TEMP VIEW m AS SELECT * FROM read_parquet('{(serve / 'monthly.parquet').as_posix()}')")
-    inside = lambda w: f"month >= date_trunc('month', DATE '{w[0]}') AND month <= DATE '{w[1]}' AND strftime(month, '%Y-%m') NOT IN {tuple(gaps) + ('',)}"
+    inside = lambda w, gaps: f"month >= date_trunc('month', DATE '{w[0]}') AND month <= DATE '{w[1]}' AND strftime(month, '%Y-%m') NOT IN {tuple(gaps) + ('',)}"
+
+    def units(table, windows, gaps):
+        """Error per unit from a table of (cell_x, cell_y, month, sat, a = actual, p = prediction, r = raw count)."""
+        # totals per unit, month and satellite first: the error is of the monthly count of an area of that size
+        um = lambda deg: (f"SELECT CAST(floor(cell_x / {deg * 20}) AS INT) AS ux, CAST(floor(cell_y / {deg * 20}) AS INT) AS uy, "
+                          f"sum(a) AS a, sum(p) AS p, sum(r) AS r FROM {table} GROUP BY ux, uy, month, sat")
+        cols = con.execute(f"""SELECT ux, uy, CAST(sum(a) AS BIGINT), sum(abs(p - a)) / sum(a), sum(abs(r - a)) / sum(a)
+                               FROM ({um(TRUST_DEG)}) GROUP BY ux, uy HAVING sum(a) >= {TRUST_SHOW_N} ORDER BY uy, ux""").fetchall()
+        by_size = [{"deg": d, "km": round(d * 111), "err": round(con.execute(f"SELECT sum(abs(p - a)) / sum(a) FROM ({um(d)})").fetchone()[0], 3)}
+                   for d in TRUST_SIZES]
+        years = con.execute(f"SELECT min(year(month)), max(year(month)) FROM {table}").fetchone()
+        ux, uy, n, err, raw = (list(c) for c in zip(*cols))
+        return {"deg": TRUST_DEG, "min_n": TRUST_MIN_N, "show_n": TRUST_SHOW_N, "years": list(years),
+                "left_out": sorted(g for g in gaps if any(w[0][:7] <= g <= w[1][:7] for w in windows)),
+                "ux": ux, "uy": uy, "n": n, "err": [round(x, 3) for x in err], "raw": [round(x, 2) for x in raw], "by_size": by_size}
+    gaps = months(val["aqua_gaps"])
     con.execute("CREATE TEMP TABLE t AS " + " UNION ALL ".join(
-        f"SELECT cell_x, cell_y, month, '{s}' AS sat, raw_aqua AS a, pred_{s.lower()} AS p, raw_{s.lower()} AS r FROM m WHERE {inside(w)}"
+        f"SELECT cell_x, cell_y, month, '{s}' AS sat, raw_aqua AS a, pred_{s.lower()} AS p, raw_{s.lower()} AS r FROM m WHERE {inside(w, gaps)}"
         for s, w in sats.items()))
-    # totals per unit, month and satellite first: the error is of the monthly count of an area of that size
-    um = lambda deg: (f"SELECT CAST(floor(cell_x / {deg * 20}) AS INT) AS ux, CAST(floor(cell_y / {deg * 20}) AS INT) AS uy, "
-                      f"sum(a) AS a, sum(p) AS p, sum(r) AS r FROM t GROUP BY ux, uy, month, sat")
-    cols = con.execute(f"""SELECT ux, uy, CAST(sum(a) AS BIGINT), sum(abs(p - a)) / sum(a), sum(abs(r - a)) / sum(a)
-                           FROM ({um(TRUST_DEG)}) GROUP BY ux, uy HAVING sum(a) >= {TRUST_SHOW_N} ORDER BY uy, ux""").fetchall()
-    by_size = [{"deg": d, "km": round(d * 111), "err": round(con.execute(f"SELECT sum(abs(p - a)) / sum(a) FROM ({um(d)})").fetchone()[0], 3)}
-               for d in TRUST_SIZES]
-    years = con.execute("SELECT min(year(month)), max(year(month)) FROM t").fetchone()
-    ux, uy, n, err, raw = (list(c) for c in zip(*cols))
-    out = {"deg": TRUST_DEG, "min_n": TRUST_MIN_N, "show_n": TRUST_SHOW_N, "satellites": list(sats), "years": list(years),
-           "left_out": sorted(g for g in gaps if any(w[0][:7] <= g <= w[1][:7] for w in sats.values())),
-           "ux": ux, "uy": uy, "n": n, "err": [round(x, 3) for x in err], "raw": [round(x, 2) for x in raw], "by_size": by_size}
+    out = {"satellites": list(sats), **units("t", sats.values(), gaps)}
+    if "viirs" in val:   # VIIRS units: the MODIS estimate against measured VIIRS; raw is Aqua's own count
+        w, vgaps = val["viirs"]["window"], months(val["aqua_gaps"] + val["terra_gaps"])
+        con.execute(f"CREATE TEMP TABLE tv AS SELECT cell_x, cell_y, month, 'V' AS sat, vharm AS a, vpred AS p, raw_aqua AS r FROM m WHERE {inside(w, vgaps)}")
+        out["viirs"] = units("tv", [w], vgaps)
     part = serve / "trust.json.part"
     part.write_text(json.dumps(out, separators=(",", ":")))
     os.replace(part, serve / "trust.json")
     con.close()
     shutil.rmtree(root / "tmp_duck", ignore_errors=True)
-    print("trust units", len(n), "with n >=", TRUST_MIN_N, sum(x >= TRUST_MIN_N for x in n), by_size, flush=True)
+    for k, t in (("Aqua units", out), ("VIIRS units", out.get("viirs"))):
+        if t:
+            print("trust units", k, len(t["n"]), "with n >=", TRUST_MIN_N, sum(x >= TRUST_MIN_N for x in t["n"]), t["by_size"], flush=True)
 
 
 def build(root, sensors=tuple(SENSORS)):
@@ -274,19 +291,22 @@ def build(root, sensors=tuple(SENSORS)):
            "aqua_start": H.AQUA_START, "model_start": H.MODEL_START, "satellites": {}}
     serve = root / "serve"
 
-    # Days when Aqua did not record: Terra saw normal activity, Aqua far less than its usual share.
-    con.execute(f"""CREATE TABLE gaps AS
-      WITH d AS (SELECT g.local_date, coalesce(a.n, 0) AS a, coalesce(t.n, 0) AS t
-                 FROM (SELECT CAST(unnest(generate_series(DATE '{H.AQUA_START}', DATE '{OVERLAP_END}-12-31', INTERVAL 1 DAY)) AS DATE) AS local_date) g
-                 LEFT JOIN (SELECT local_date, sum(n_pixels) AS n FROM cp_Aqua GROUP BY 1) a ON a.local_date = g.local_date
-                 LEFT JOIN (SELECT local_date, sum(n_pixels) AS n FROM cp_Terra GROUP BY 1) t ON t.local_date = g.local_date),
-           w AS (SELECT *, median(t) OVER win AS tm, median(a / greatest(t, 1)) OVER win AS rm FROM d
-                 WINDOW win AS (ORDER BY local_date ROWS BETWEEN 30 PRECEDING AND 30 FOLLOWING))
-      SELECT local_date FROM w WHERE tm >= {GAP_MIN} AND t >= 0.5 * tm AND a < 0.25 * rm * t""")
-    gap, days = "local_date IN (SELECT local_date FROM gaps)", [r[0] for r in con.execute("SELECT local_date FROM gaps ORDER BY 1").fetchall()]
-    out["aqua_gaps"] = [[f"{a}", f"{b}"] for a, b in zip(
-        [d for i, d in enumerate(days) if i == 0 or (d - days[i - 1]).days > 1],
-        [d for i, d in enumerate(days) if i == len(days) - 1 or (days[i + 1] - d).days > 1])]
+    # Days when one MODIS did not record: the other saw normal activity, this one far less than its usual share.
+    def outages(table, lost, other):
+        con.execute(f"""CREATE TABLE {table} AS
+          WITH d AS (SELECT g.local_date, coalesce(a.n, 0) AS a, coalesce(t.n, 0) AS t
+                     FROM (SELECT CAST(unnest(generate_series(DATE '{H.AQUA_START}', DATE '{OVERLAP_END}-12-31', INTERVAL 1 DAY)) AS DATE) AS local_date) g
+                     LEFT JOIN (SELECT local_date, sum(n_pixels) AS n FROM cp_{lost} GROUP BY 1) a ON a.local_date = g.local_date
+                     LEFT JOIN (SELECT local_date, sum(n_pixels) AS n FROM cp_{other} GROUP BY 1) t ON t.local_date = g.local_date),
+               w AS (SELECT *, median(t) OVER win AS tm, median(a / greatest(t, 1)) OVER win AS rm FROM d
+                     WINDOW win AS (ORDER BY local_date ROWS BETWEEN 30 PRECEDING AND 30 FOLLOWING))
+          SELECT local_date FROM w WHERE tm >= {GAP_MIN} AND t >= 0.5 * tm AND a < 0.25 * rm * t""")
+        days = [r[0] for r in con.execute(f"SELECT local_date FROM {table} ORDER BY 1").fetchall()]
+        return [[f"{a}", f"{b}"] for a, b in zip(
+            [d for i, d in enumerate(days) if i == 0 or (d - days[i - 1]).days > 1],
+            [d for i, d in enumerate(days) if i == len(days) - 1 or (days[i + 1] - d).days > 1])]
+    out["aqua_gaps"], out["terra_gaps"] = outages("gaps", "Aqua", "Terra"), outages("tgaps", "Terra", "Aqua")
+    gap, tgap = "local_date IN (SELECT local_date FROM gaps)", "local_date IN (SELECT local_date FROM tgaps)"
     baseline = f"{baseline} AND NOT {gap}"
 
     # Terra -> Aqua, for the months before Aqua
@@ -294,14 +314,15 @@ def build(root, sensors=tuple(SENSORS)):
     con.execute(f"CREATE TABLE pred_Terra AS {H.apply_terra('tr', 'cp_Terra', 'TRUE')}")
 
     # Baseline quantiles per 5 degree tile and calendar month, with zero months filled in
-    con.execute(f"""CREATE TEMP TABLE base5 AS
+    quantiles = lambda table, src, where, years: con.execute(f"""CREATE TEMP TABLE {table} AS
       WITH a AS (SELECT t5x, t5y, month, sum(n_pixels) AS n
-                 FROM (SELECT *, {H.T5}, {MONTH} FROM cp_Aqua WHERE {baseline}) GROUP BY ALL),
+                 FROM (SELECT *, {H.T5}, {MONTH} FROM {src} WHERE {where}) GROUP BY ALL),
            g AS (SELECT t5x, t5y, month FROM (SELECT DISTINCT t5x, t5y FROM a)
-                 CROSS JOIN (SELECT CAST(unnest(generate_series(DATE '{H.BASELINE[0]}-01-01', DATE '{H.BASELINE[1]}-12-01',
+                 CROSS JOIN (SELECT CAST(unnest(generate_series(DATE '{years[0]}-01-01', DATE '{years[1]}-12-01',
                                                                 INTERVAL 1 MONTH)) AS DATE) AS month))
       SELECT g.t5x, g.t5y, month(g.month) AS m, quantile_cont(coalesce(a.n, 0), {H.QUANTILES}) AS q
       FROM g LEFT JOIN a ON a.t5x = g.t5x AND a.t5y = g.t5y AND a.month = g.month GROUP BY ALL""")
+    quantiles("base5", "cp_Aqua", baseline, H.BASELINE)
 
     # VIIRS -> Aqua: leave one overlap year out for the proofs, then one fit on all overlap years
     starts = {}
@@ -323,6 +344,8 @@ def build(root, sensors=tuple(SENSORS)):
                     copy_to(con, f"SELECT * FROM f_{t}", serve / "model" / f"{t}.parquet")
         out["satellites"][sat] = {"window": [f"{start:%Y-%m-%d}", f"{OVERLAP_END}-12-31"],
                                   **validate(con, sat, f"{window} AND NOT {gap}")}
+    for t in ("pairs", "mu", "aq"):   # the last fit's work tables hold every overlap row: on the world they fill the memory the next steps need
+        con.execute(f"DROP TABLE IF EXISTS f_{t}")
 
     # In-sample check of the Terra scaling, used for the range before Aqua
     con.execute(f"""CREATE TEMP TABLE val_t AS
@@ -344,13 +367,70 @@ def build(root, sensors=tuple(SENSORS)):
         out["twin"] = {"overlap": twin(f"local_date >= DATE '{n20_start}' AND local_date <= DATE '{OVERLAP_END}-12-31'"),
                        "after": twin(f"local_date >= DATE '{H.MODEL_START}'")}
 
+    # VIIRS units: one measured VIIRS series cp_V, with Aqua and Terra converted to it before VIIRS (see H.fit_up)
+    ref, w = primary, H.W_AQUA
+    ref_start, vstart_s = out["satellites"][ref]["window"][0], min(out["satellites"][s]["window"][0] for s in viirs)
+    vstart, vwin = f"DATE '{vstart_s}'", f"local_date >= DATE '{vstart_s}' AND local_date <= DATE '{OVERLAP_END}-12-31'"
+    e = lambda c: f"sum(abs({c} - actual)) / sum(actual)"
+    viirs_out = {}
+    if len(viirs) == 2:   # the older VIIRS scaled to ref, learned where both flew; the proof hides one year at a time
+        other, both = viirs[1], f"local_date >= {starts[ref]}"
+        last = con.execute(f"SELECT year(max(local_date)) FROM cp_{ref}").fetchone()[0]
+        for i, held in enumerate([*range(int(ref_start[:4]), last + 1), None]):
+            H.fit_terra(con, "tw", f"cp_{other}", f"cp_{ref}", both + ("" if held is None else f" AND year(local_date) <> {held}"))
+            if held is not None:
+                con.execute(("INSERT INTO pred_twin " if i else "CREATE TABLE pred_twin AS ")
+                            + H.apply_terra("tw", f"cp_{other}", f"{both} AND year(local_date) = {held}"))
+        con.execute(f"""CREATE TABLE cp_V AS
+          SELECT cell_x, cell_y, local_date, daynight, est AS n_pixels FROM ({H.apply_terra('tw', f'cp_{other}', f'local_date < {starts[ref]}')})
+          UNION ALL SELECT cell_x, cell_y, local_date, daynight, n_pixels FROM cp_{ref} WHERE {both}""")
+        con.execute(f"""CREATE TEMP TABLE val_tw AS
+          SELECT t5x, t5y, month, sum(r) AS r, sum(s) AS s, CAST(sum(a) AS DOUBLE) AS actual
+          FROM (SELECT t5x, t5y, {MONTH}, n_pixels AS r, est AS s, 0 AS a FROM pred_twin
+                UNION ALL SELECT t5x, t5y, {MONTH}, 0, 0, n_pixels FROM (SELECT *, {H.T5} FROM cp_{ref} WHERE {both})) GROUP BY ALL""")
+        viirs_out["twin"] = {**rows(con, f"SELECT {e('r')} AS raw, {e('s')} AS scaled FROM val_tw")[0],
+                             "range": rows(con, H.range_sql("val_tw", "s", "actual"))}
+    else:
+        con.execute(f"CREATE TABLE cp_V AS SELECT cell_x, cell_y, local_date, daynight, n_pixels FROM cp_{ref}")
+    for sat, own in (("Aqua", gap), ("Terra", tgap)):   # leave one year out for the proof, then one fit on all overlap years
+        for i, held in enumerate([*range(int(vstart_s[:4]), OVERLAP_END + 1), None]):
+            print("fit up", sat, "final" if held is None else f"without {held}", flush=True)
+            H.fit_up(con, "u", f"cp_{sat}", "cp_V", f"{vwin} AND NOT {own}" + ("" if held is None else f" AND year(local_date) <> {held}"))
+            where = f"local_date < {vstart}" if held is None else f"{vwin} AND year(local_date) = {held}"
+            con.execute((f"INSERT INTO pred_up_{sat} " if i else f"CREATE TABLE pred_up_{sat} AS ") + H.apply_up("u", f"cp_{sat}", where))
+    vval = f"{vwin} AND NOT {gap} AND NOT {tgap}"
+    con.execute(f"""CREATE TEMP TABLE val_v AS
+      SELECT t5x, t5y, month, daynight, CAST(sum(a) AS DOUBLE) AS actual, sum(ua) AS ua, sum(ut) AS ut, {w} * sum(ua) + {1 - w:.6g} * sum(ut) AS ub
+      FROM (SELECT t5x, t5y, {MONTH}, daynight, n_pixels AS a, 0 AS ua, 0 AS ut FROM (SELECT *, {H.T5} FROM cp_V WHERE {vval})
+            UNION ALL SELECT t5x, t5y, {MONTH}, daynight, 0, est, 0 FROM pred_up_Aqua WHERE {vval}
+            UNION ALL SELECT t5x, t5y, {MONTH}, daynight, 0, 0, est FROM pred_up_Terra WHERE {vval}) GROUP BY ALL""")
+    con.execute("CREATE TEMP TABLE val_v5 AS SELECT t5x, t5y, month, sum(actual) AS actual, sum(ua) AS ua, sum(ut) AS ut, sum(ub) AS ub FROM val_v GROUP BY ALL")
+    vbase = (int(vstart_s[:4]) + (vstart_s[5:7] != "01"), con.execute("SELECT year(max(local_date) + 1) - 1 FROM cp_V").fetchone()[0])
+    quantiles("base_v", "cp_V", f"year(local_date) BETWEEN {vbase[0]} AND {vbase[1]}", vbase)
+    same = lambda d: f"avg(CASE WHEN abs({H.level_sql('ub', 'b.q')} - {H.level_sql('actual', 'b.q')}) <= {d} THEN 1.0 ELSE 0 END)"
+    single = lambda c: {**rows(con, f"SELECT {e(c)} AS error, sum({c}) / sum(actual) AS bias FROM val_v5")[0],
+                        "range": rows(con, H.range_sql("val_v5", c, "actual"))}
+    out["viirs"] = {
+        "unit": "VIIRS-equivalent detections", "reference": ref, "start": vstart_s, "ref_start": ref_start,
+        "window": [vstart_s, f"{OVERLAP_END}-12-31"], "baseline": list(vbase), "weight_aqua": w,
+        "both": {**single("ub"), **rows(con, f"SELECT {e('ub')} AS night, sum(ub) / sum(actual) AS bias_night FROM val_v WHERE daynight = 'N'")[0],
+                 "folds": rows(con, f"SELECT year(month) AS year, {e('ub')} AS error, sum(ub) / sum(actual) AS bias FROM val_v5 GROUP BY 1 HAVING sum(actual) > 0 ORDER BY 1"),
+                 "tiles": rows(con, f"""SELECT CAST(floor(t5x / 4) AS INT) AS t20x, CAST(floor(t5y / 4) AS INT) AS t20y, sum(actual) AS actual,
+                                               {e('ub')} AS error FROM val_v5 GROUP BY 1, 2 HAVING sum(actual) > 0 ORDER BY 2, 1"""),
+                 "anomaly_agreement": rows(con, f"""SELECT {same(0)} AS same, {same(1)} AS within_one, count(*) AS months
+                   FROM val_v5 v JOIN base_v b ON b.t5x = v.t5x AND b.t5y = v.t5y AND b.m = month(v.month) WHERE b.q[3] >= 5""")[0]},
+        "aqua": single("ua"), "terra": single("ut"), **viirs_out}
+
     # Monthly table per cell: raw counts per satellite, harmonized value, out-of-sample predictions
     a, m = f"DATE '{H.AQUA_START}'", f"DATE '{H.MODEL_START}'"
     # Aqua gap days are filled with converted VIIRS, or with scaled Terra before VIIRS exists ("fill").
-    cols = ("raw_terra", "raw_aqua", "raw_n20", "raw_snpp", "harm", "harm_ratio", "fill", "pred_n20", "pred_snpp", "frp", "harm_night")
-    # harm_night is the same per-row value as harm, kept for night rows only
-    part = lambda src, **v: (f"SELECT cell_x, cell_y, {MONTH}, " + ", ".join(f"{v.get(c, 0)} AS {c}" for c in cols if c != "harm_night")
-                             + f", CASE WHEN daynight = 'N' THEN {v.get('harm', 0)} ELSE 0 END AS harm_night FROM {src}")
+    cols = ("raw_terra", "raw_aqua", "raw_n20", "raw_snpp", "harm", "harm_ratio", "fill", "pred_n20", "pred_snpp", "frp", "harm_night",
+            "vharm", "vharm_night", "vpred")
+    # a *_night column is the same per-row value as its day-and-night column, kept for night rows only
+    night = {"harm_night": "harm", "vharm_night": "vharm"}
+    part = lambda src, **v: (f"SELECT cell_x, cell_y, {MONTH}, " + ", ".join(
+        f"CASE WHEN daynight = 'N' THEN {v.get(night[c], 0)} ELSE 0 END AS {c}" if c in night else f"{v.get(c, 0)} AS {c}" for c in cols)
+        + f" FROM {src}")
     when = lambda cond, c: f"CASE WHEN {cond} THEN {c} ELSE 0 END"
     old_gap, new_gap = f"{gap} AND local_date < {starts[primary]}", f"{gap} AND local_date >= {starts[primary]}"
     early = lambda c="est": when(f"local_date < {a} OR ({old_gap})", c)
@@ -362,6 +442,11 @@ def build(root, sensors=tuple(SENSORS)):
         parts += [part(f"cp_{sat}", **{f"raw_{sat.lower()}": "n_pixels"}),
                   part(f"pred_{sat}", harm=late("est_table"), harm_ratio=late("est_ratio"), frp=late("est_frp"),
                        fill=when(new_gap, "est_table") if sat == primary else "0", **{f"pred_{sat.lower()}": "est_table"})]
+    # VIIRS units: measured from vstart; before it W_AQUA Aqua + the rest Terra, one alone when the other did not record
+    wa = f"CASE WHEN local_date < {a} OR {gap} THEN 0 WHEN {tgap} THEN 1 ELSE {w} END"
+    wt = f"CASE WHEN local_date < {a} OR {gap} THEN 1 WHEN {tgap} THEN 0 ELSE {1 - w:.6g} END"
+    parts += [part("cp_V", vharm=when(f"local_date >= {vstart}", "n_pixels"))]
+    parts += [part(f"pred_up_{s}", vharm=when(f"local_date < {vstart}", f"({k}) * est"), vpred=f"({k}) * est") for s, k in (("Aqua", wa), ("Terra", wt))]
     sums = ", ".join(f"sum({c}) AS {c}" for c in cols)
     con.execute(f"CREATE TABLE monthly AS SELECT cell_x, cell_y, month, {sums} FROM ({' UNION ALL '.join(parts)}) GROUP BY ALL")
     con.execute(f"""CREATE TABLE cell_country AS
@@ -378,7 +463,7 @@ def build(root, sensors=tuple(SENSORS)):
             serve / "countries.parquet")
     copy_to(con, """SELECT CAST(floor(cell_x / 10.0) AS INT) AS gx, CAST(floor(cell_y / 10.0) AS INT) AS gy, month,
                            sum(raw_terra + raw_aqua) AS raw_modis, sum(raw_n20 + raw_snpp) AS raw_viirs, sum(harm) AS harm,
-                           sum(harm_night) AS harm_night
+                           sum(harm_night) AS harm_night, sum(vharm) AS vharm, sum(vharm_night) AS vharm_night
                     FROM monthly GROUP BY ALL ORDER BY month""", serve / "globe.parquet")
     (serve / "validation.json").write_text(json.dumps(out, indent=1, default=str))
     con.close()
@@ -408,3 +493,6 @@ if __name__ == "__main__":
     result = build(args.root, args.sensors)
     for sat, v in result["satellites"].items():
         print(sat, "held-out error:", {k: round(x, 3) for k, x in v["overall"].items()})
+    for k, v in result["viirs"].items():
+        if isinstance(v, dict):
+            print("viirs", k, "held-out error:", {x: round(y, 3) for x, y in v.items() if isinstance(y, float)})

@@ -1,7 +1,8 @@
 """Make MODIS and VIIRS hotspot counts comparable.
 
 Unit of the result: "MODIS-equivalent hotspots" = the number of hotspot pixels
-Aqua MODIS would have reported. Everything here is DuckDB SQL, so the same code
+Aqua MODIS would have reported. fit_up()/apply_up() go the other way, to "VIIRS-equivalent
+detections" (what NOAA-20 VIIRS reports). Everything here is DuckDB SQL, so the same code
 runs on a synthetic test table and on the full global record.
 """
 
@@ -12,7 +13,8 @@ AQUA_START = "2002-08-01"    # first full Aqua month; Terra-scaled values are us
 MODEL_START = "2022-01-01"   # Aqua's orbit drifts from here on; converted VIIRS takes over
 BASELINE = (2003, 2020)      # real Aqua years used for medians and anomaly classes
 RANGE_EDGES = (10, 30, 100, 300, 1000, 3000)
-MODEL_TABLES = ("l5", "l20", "lg", "l0", "ratio", "ratio_g", "ratio_0", "cal", "cal_g", "cal_0")   # what fit() writes and apply() reads
+MODEL_TABLES = ("l5", "l20", "lg", "l0", "ratio", "ratio_g", "ratio_0", "cal", "cal_g", "cal_0", "cal5")   # what fit() writes and apply() reads
+W_AQUA = 0.7                 # weight of Aqua when Aqua and Terra both recorded (VIIRS units); hidden years: flat from 0.6 to 0.8
 
 # Keep presumed vegetation fires, drop the low-confidence class of each sensor.
 CLEAN = """(type IS NULL OR type = 0) AND CASE WHEN satellite IN ('Terra', 'Aqua')
@@ -51,7 +53,8 @@ def fit(con, name, viirs, aqua, train):
 
     Writes temp tables {name}_l5/_l20/_lg/_l0 (conversion tables, fine to coarse),
     {name}_ratio/_ratio_g/_ratio_0 (ratio of sums per region and month, fine to coarse) and
-    {name}_cal/_cal_g/_cal_0 (the same per region, month and day/night, used to calibrate the tables).
+    {name}_cal/_cal_g/_cal_0 (the same per region, month and day/night, used to calibrate the tables) and
+    {name}_cal5 (a second calibration per 5 degree tile, month and day/night).
     """
     con.execute(f"""
       CREATE OR REPLACE TEMP TABLE {name}_pairs AS
@@ -80,6 +83,13 @@ def fit(con, name, viirs, aqua, train):
           SELECT {keep} v.tot AS v_tot, coalesce(a.tot, 0) / v.tot AS ratio, coalesce(a.tot, 0) / nullif(v.mu, 0) AS cal
           FROM (SELECT {cols + ',' if cols else ''} sum(n_pixels) AS tot, sum(mu) AS mu FROM {name}_mu {group}) v
           LEFT JOIN (SELECT {cols + ',' if cols else ''} sum(n_pixels) AS tot FROM {name}_aq {group}) a ON {on}""")
+    # Table estimate e and Aqua pixels a of the training rows per 5 degree tile: apply() scales by a / e where both are large
+    con.execute(f"""CREATE OR REPLACE TEMP TABLE {name}_cal5 AS
+      SELECT e.*, coalesce(a.a, 0) AS a
+      FROM (SELECT t5x, t5y, month(local_date) AS m, daynight, sum(est_table) AS e FROM ({_apply(name, viirs, train)}) GROUP BY ALL) e
+      LEFT JOIN (SELECT t5x, t5y, month(local_date) AS m, daynight, sum(n_pixels) AS a
+                 FROM (SELECT *, {T5} FROM {aqua} WHERE {train}) GROUP BY ALL) a
+        ON a.t5x = e.t5x AND a.t5y = e.t5y AND a.m = e.m AND a.daynight = e.daynight""")
 
 
 def _mu(name, rel):
@@ -96,6 +106,14 @@ def _mu(name, rel):
 
 def apply(name, viirs, where):
     """SQL: convert VIIRS cell-passes with three methods (tables, monthly ratio, one global factor)."""
+    return f"""
+    SELECT p.* REPLACE (p.est_table * CASE WHEN c5.e >= {MIN_N} AND c5.a >= {MIN_N} THEN c5.a / c5.e ELSE 1 END AS est_table)
+    FROM ({_apply(name, viirs, where)}) p
+    LEFT JOIN {name}_cal5 c5 ON c5.t5x = p.t5x AND c5.t5y = p.t5y AND c5.m = month(p.local_date) AND c5.daynight = p.daynight"""
+
+
+def _apply(name, viirs, where):
+    """SQL: apply() before the 5 degree calibration."""
     pick = lambda r, col: f"coalesce(CASE WHEN {r}.v_tot >= {MIN_N} THEN {r}.{col} END, {r}g.{col}, {r}0.{col}, 0)"
     return f"""
     SELECT v.cell_x, v.cell_y, v.local_date, v.daynight, v.n_pixels, v.t5x, v.t5y,
@@ -159,6 +177,35 @@ def apply_terra(name, terra, where):
     LEFT JOIN {name}_tr r ON r.t20x = t.t20x AND r.t20y = t.t20y AND r.m = t.m AND r.daynight = t.daynight
     LEFT JOIN {name}_tr_g rg ON rg.m = t.m AND rg.daynight = t.daynight
     LEFT JOIN {name}_tr_0 r0 ON r0.daynight = t.daynight"""
+
+
+UP = (("up5", "t5x, t5y, m, daynight"), ("up20", "t20x, t20y, m, daynight"), ("up_g", "m, daynight"), ("up_0", "daynight"))
+
+
+def fit_up(con, name, modis, viirs, train):
+    """MODIS-to-VIIRS ratio of sums of pixels per 5 degree tile, month and day/night, fine to coarse (see UP).
+    The conversion tables do not help in this direction (hidden years), so it is a plain ratio."""
+    for level, cols in UP:
+        on = " AND ".join(f"v.{c} = s.{c}" for c in cols.split(", "))
+        keep = ", ".join(f"s.{c}" for c in cols.split(", "))
+        side = lambda rel: f"""(SELECT {cols}, sum(n_pixels) AS tot
+                                FROM (SELECT *, {T5}, {T20}, month(local_date) AS m FROM {rel} WHERE {train}) GROUP BY {cols})"""
+        con.execute(f"""CREATE OR REPLACE TEMP TABLE {name}_{level} AS
+          SELECT {keep}, s.tot, coalesce(v.tot, 0) AS v_tot, coalesce(v.tot, 0) / s.tot AS ratio
+          FROM {side(modis)} s LEFT JOIN {side(viirs)} v ON {on}""")
+
+
+def apply_up(name, modis, where):
+    """SQL: MODIS cell-passes as VIIRS-unit pixels (est). A level counts when both sums reach MIN_N; the last one always does."""
+    pick = lambda r: f"CASE WHEN {r}.tot >= {MIN_N} AND {r}.v_tot >= {MIN_N} THEN {r}.ratio END"
+    return f"""
+    SELECT s.cell_x, s.cell_y, s.local_date, s.daynight, s.n_pixels, s.t5x, s.t5y,
+      s.n_pixels * coalesce({pick('r5')}, {pick('r20')}, {pick('rg')}, r0.ratio, 0) AS est
+    FROM (SELECT *, {T5}, {T20}, month(local_date) AS m FROM {modis} WHERE {where}) s
+    LEFT JOIN {name}_up5 r5 ON r5.t5x = s.t5x AND r5.t5y = s.t5y AND r5.m = s.m AND r5.daynight = s.daynight
+    LEFT JOIN {name}_up20 r20 ON r20.t20x = s.t20x AND r20.t20y = s.t20y AND r20.m = s.m AND r20.daynight = s.daynight
+    LEFT JOIN {name}_up_g rg ON rg.m = s.m AND rg.daynight = s.daynight
+    LEFT JOIN {name}_up_0 r0 ON r0.daynight = s.daynight"""
 
 
 QUANTILES = "[0.1, 0.33, 0.5, 0.67, 0.9]"

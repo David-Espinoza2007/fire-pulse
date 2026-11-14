@@ -70,10 +70,12 @@ def test_strong(client):
 def test_places(client):
     c, _ = client
     r = c.get("/api/live/places", params={"bbox": BOX}).json()["places"]
-    assert r[0]["days"] == 5 and r[0]["detections"] == 20 and r[0]["baseline_years"] == 18 and r[0]["why"].startswith("Burning 5 of")
+    assert r[0]["days"] == 5 and r[0]["detections"] == 20 and r[0]["baseline_years"] == 7 and r[0]["why"].startswith("Burning 5 of")
     assert len(r) <= 8 and all(p["days"] <= 5 for p in r)
     assert all(0 <= p["recent_years"] <= 3 and ("new here" not in p["why"] or p["recent_years"] == 0) for p in r)
     assert any(p["night"] for p in c.get("/api/live/places", params={"bbox": BOX, "time": "night"}).json()["places"])
+    a = c.get("/api/live/places", params={"bbox": BOX, "unit": "aqua"}).json()["places"]
+    assert a[0]["baseline_years"] == 18 and a[0]["harmonized"] != r[0]["harmonized"] and r[0]["harmonized"] == r[0]["detections"]
 
 
 def test_static_mask(client):
@@ -174,7 +176,7 @@ def decode_tile(blob):
     take = lambda code, n: (lambda a, size: (a, pos + size + (-size % 4)))(array(code, blob[pos:pos + n * array(code).itemsize]), n * array(code).itemsize)
     out = {}
     for name, code, n in (("start", "I", head["months"] + 1), ("idx", "H", head["nnz"]), ("harm", "H", head["nnz"]),
-                          ("night", "H", head["nnz"]), ("raw", "H", head["nnz"])):
+                          ("night", "H", head["nnz"]), ("raw", "H", head["nnz"])) + ((("vharm", "H", head["nnz"]), ("vnight", "H", head["nnz"])) if head["v"] else ()):
         out[name], pos = take(code, n)
     assert pos == len(blob)
     return head, out
@@ -251,3 +253,120 @@ def test_trust_endpoint(client):
     assert r.headers["cache-control"] == "no-cache" and r.json()["deg"] == 1 and len(r.json()["n"]) == len(r.json()["err"]) > 0
     assert c.get("/api/trust", headers={"if-none-match": r.headers["etag"]}).status_code == 304
     assert c.get("/api/meta").json()["trust"] is True
+
+
+MX = (HERE / "data/mx/serve/monthly.parquet").as_posix()
+T16 = "cell_x BETWEEN 1600 - 3600 AND 1699 - 3600 AND cell_y BETWEEN 2200 - 1800 AND 2299 - 1800"   # tile 3/16/22
+
+
+def test_tiles_viirs(client, tmp_path):
+    import tiles
+    c, _ = client
+    head, d = decode_tile(c.get("/api/tiles/3/16/22").content)
+    assert head["v"] is True and head["vscale"] == 4 and decode_tile(c.get("/api/tiles/1/3/4").content)[0]["vscale"] == 1
+    t = max(range(head["months"]), key=lambda t: sum(d["vharm"][d["start"][t]:d["start"][t + 1]]))
+    s, e = d["start"][t], d["start"][t + 1]
+    y, m = divmod(t + 10, 12)
+    want = duckdb.connect().execute(f"SELECT sum(vharm) FROM read_parquet('{MX}') WHERE month = DATE '{2000 + y}-{m + 1:02d}-01' AND {T16}").fetchone()[0]
+    assert sum(d["vharm"][s:e]) / head["vscale"] == pytest.approx(want, abs=(e - s) * 0.5 / head["vscale"] + 1e-6)
+    assert all(vn <= vh + 1 for vh, vn in zip(d["vharm"], d["vnight"]))
+    old = tmp_path / "serve"   # data without VIIRS units: no extra arrays
+    old.mkdir()
+    duckdb.connect().execute(f"""COPY (SELECT * EXCLUDE (vharm, vharm_night, vpred) FROM read_parquet('{MX}') WHERE {T16})
+                                 TO '{(old / 'monthly.parquet').as_posix()}' (FORMAT parquet)""")
+    head, d = decode_tile(tiles.build_tile(old, 3, 16, 22))
+    assert head["v"] is False and "vharm" not in d
+
+
+def test_unit_logic():
+    import app   # the source, measured and range rules, independent of the data on disk
+    two = {"start": "2012-02-01", "ref_start": "2018-05-01", "reference": "N20",
+           "terra": {"range": ["t"]}, "both": {"range": ["b"]}, "twin": {"range": ["w"]}}
+    one = {"start": "2018-05-01", "ref_start": "2018-05-01", "reference": "N20", "terra": {"range": ["t"]}, "both": {"range": ["b"]}}
+    for iso, want in (("2001-01-01", ("terra_up", False, ["t"])), ("2002-08-01", ("modis_up", False, ["b"])),
+                      ("2012-01-01", ("modis_up", False, ["b"])), ("2012-02-01", ("snpp_scaled", True, ["w"])),
+                      ("2018-04-01", ("snpp_scaled", True, ["w"])), ("2018-05-01", ("n20", True, [])), ("2025-12-01", ("n20", True, []))):
+        assert app.viirs_month(iso, two) == want
+    for iso, want in (("2002-07-01", ("terra_up", False, ["t"])), ("2018-04-01", ("modis_up", False, ["b"])), ("2018-05-01", ("n20", True, []))):
+        assert app.viirs_month(iso, one) == want   # one VIIRS satellite: no snpp_scaled, no twin
+
+
+def test_units(client):
+    c, app = client
+    m = c.get("/api/meta").json()
+    assert m["units"] == ["viirs", "aqua"] and m["baseline"] == {"aqua": [2003, 2020], "viirs": [2019, 2025]}
+    assert m["viirs"] == {"start": "2018-05", "ref_start": "2018-05", "reference": "N20"}
+    q = {"country": "Mexico"}
+    v, a = (c.get("/api/calendar", params={**q, **u}).json() for u in ({}, {"unit": "aqua"}))
+    assert v["unit"] == "viirs" and a["unit"] == "aqua" and v["unit_name"] == app.VV["unit"] and a["unit_name"] == app.VAL["unit"]
+    assert v["baseline"] == [2019, 2025] and a["baseline"] == [2003, 2020]
+    by = {x["month"]: x for x in v["months"]}
+    assert by["2001-01"]["source"] == "terra_up" and by["2010-01"]["source"] == "modis_up" and by["2019-01"]["source"] == "n20"
+    assert [x["measured"] for x in v["months"]] == [x["month"] >= "2018-05" for x in v["months"]]
+    assert all(x["filled"] == 0 and list(x["pred"]) == ["modis"] for x in v["months"])
+    assert by["2010-01"]["low"] < by["2010-01"]["harmonized"] < by["2010-01"]["high"]
+    assert by["2019-01"]["low"] == by["2019-01"]["high"] == by["2019-01"]["harmonized"] == by["2019-01"]["raw"]["n20"]   # measured: the reference count itself
+    assert by["2019-01"]["pred"]["modis"] > 0 and by["2023-01"]["pred"]["modis"] == 0
+    assert [x["measured"] for x in a["months"]] == [x["source"] == "aqua" for x in a["months"]] and a["months"][0]["source"] == "terra_scaled"
+    assert set(a["months"][-1]["pred"]) == {"n20", "snpp"}
+    day, night = (c.get("/api/calendar", params={**q, "time": t}).json()["months"][-1] for t in ("day", "night"))
+    assert day["harmonized"] + night["harmonized"] == pytest.approx(v["months"][-1]["harmonized"], abs=0.2) and night["harmonized"] == night["night"]
+    assert c.get("/api/calendar", params={**q, "unit": "x"}).status_code == 422
+    assert c.get("/api/calendar", params={**q, "unit": "viirs", "method": "ratio"}).status_code == 422
+    assert c.get("/api/calendar", params={**q, "unit": "aqua", "method": "ratio"}).status_code == 200
+    csv = c.get("/api/calendar", params={**q, "format": "csv", "unit": "aqua"}).text.splitlines()
+    assert csv[0].split(",")[6:9] == ["source", "measured", "unit"] and csv[1].split(",")[8] == "aqua"
+    ring = [[-103, 17], [-98, 17], [-98, 23], [-103, 23], [-103, 17]]
+    assert c.post("/api/calendar", json={"polygon": {"type": "Polygon", "coordinates": [ring]}, "unit": "aqua"}).json()["unit"] == "aqua"
+    cells = lambda **u: sorted(c.get("/api/cells", params={"bbox": "-101,19,-99,21", "month": "2019-05", **u}).json()["cells"])   # ties sort in any order
+    assert cells(unit="viirs") == cells() != cells(unit="aqua") and c.get("/api/cells", params={"bbox": BOX, "month": "2019-05", "unit": "x"}).status_code == 422
+    g = c.get("/api/globe", params={"month": "2019-05"}).json()["cells"]
+    assert g and all(len(x) == 5 for x in g) and "viirs_units" in c.get("/api/globe/years").json()[-1]
+
+
+def test_units_old_data(client, monkeypatch):
+    c, app = client   # data built before VIIRS units: aqua only, as before
+    monkeypatch.setattr(app, "VV", None)
+    monkeypatch.setattr(app, "UNITS", ["aqua"])
+    assert c.get("/api/meta").json()["units"] == ["aqua"] and c.get("/api/meta").json()["viirs"] is None
+    r = c.get("/api/calendar", params={"country": "Mexico"}).json()
+    assert r["unit"] == "aqua" and r["baseline"] == [2003, 2020]
+    assert c.get("/api/calendar", params={"country": "Mexico", "unit": "viirs"}).status_code == 409
+    assert c.get("/api/live", params={"bbox": BOX, "unit": "viirs"}).status_code == 409
+    assert c.get("/api/live", params={"bbox": BOX}).json()["unit"] == "aqua"
+
+
+def test_live_units(client):
+    c, _ = client
+    v, a = (c.get("/api/live", params={"bbox": BOX, **u}).json() for u in ({}, {"unit": "aqua"}))
+    assert v["unit"] == "viirs" and v["harmonized"] == v["raw"] == len(ROWS) - 1 and a["unit"] == "aqua" and a["harmonized"] != a["raw"]
+    cells = lambda **u: c.get("/api/live/cells", params=u).json()["cells"]
+    assert all(x[2] == x[3] for x in cells()) and any(x[2] != x[3] for x in cells(unit="aqua"))
+    assert c.get("/api/live", params={"bbox": BOX, "unit": "x"}).status_code == 422
+
+
+def test_sea_filter(client, tmp_path):
+    c, app = client
+    if not app.SPATIAL or not app.HAS["states"]:
+        pytest.skip("needs data/reference/states.parquet (reference.py) and the spatial extension")
+    known, unknown, sea = (19.43, -99.13), (31.5, -110.5), (20.0, -125.0)   # Mexico City (a record cell), Sonora desert (land, no record cell), Pacific
+    assert duckdb.connect().execute(f"""SELECT count(*) FROM read_parquet('{(HERE / 'data/mx/serve/cell_country.parquet').as_posix()}')
+        WHERE cell_x = {math.floor(known[1] / 0.05)} AND cell_y = {math.floor(known[0] / 0.05)}""").fetchone()[0] == 1
+    f = tmp_path / "week.csv"
+    f.write_text(HEAD + "".join(f"{la},{lo},330,0.4,0.4,2026-11-10,1900,N20,nominal,2.0NRT,290,10,D\n" for la, lo in (known, unknown, sea)))
+    old = app.LIVE_URL, app.LIVE_FILE
+    app.LIVE_URL, app.LIVE_FILE = f.as_uri(), tmp_path / "cache.csv"
+    try:
+        app.live_state["loaded"] = 0
+        world = c.get("/api/live", params={"country": "World"}).json()
+        assert world["raw"] == 2 and world["sea_removed"] == 1
+        p = c.get("/api/live/points", params={"country": "World"}).json()["points"]
+        assert sorted((x[1], x[0]) for x in p) == sorted((round(la, 4), round(lo, 4)) for la, lo in (known, unknown))
+        assert c.get("/api/live", params={"bbox": "-126,19,-124,21"}).json()["sea_removed"] == 1 and c.get("/api/live", params={"bbox": BOX}).json()["sea_removed"] == 0
+        assert sum(x[2] for x in c.get("/api/live/cells").json()["cells"]) == 2
+        app.live_state["sea"] = False   # filter off (no states or no spatial extension): the count is null
+        assert c.get("/api/live", params={"country": "World"}).json()["sea_removed"] is None
+    finally:
+        app.LIVE_URL, app.LIVE_FILE = old
+        app.live_state["loaded"] = 0
+    assert len(pts(c)) == len(ROWS) - 1   # the regular fixture file again
