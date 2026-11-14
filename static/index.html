@@ -111,13 +111,14 @@
     <footer class="dock">
       <button type="button" id="play" class="btn">▶ Play</button>
       <label class="dock-f">Speed<select id="speed"><option value="0.25">¼×</option><option value="0.5">½×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
-      <label class="dock-f">Years<select id="rFrom" aria-label="First year"></select>to<select id="rTo" aria-label="Last year"></select></label>
+      <span class="dock-f">From<select id="rFromM" aria-label="First month"></select><select id="rFrom" aria-label="First year"></select>to<select id="rToM" aria-label="Last month"></select><select id="rTo" aria-label="Last year"></select></span>
       <div class="time">
         <div class="time-top">
           <label for="tRange" class="readout" id="readout"></label>
           <span class="muted" id="sensorNow"></span>
         </div>
         <input type="range" id="tRange" min="0" max="299" step="1" value="299">
+        <input type="range" id="dRange" min="0" max="7" step="1" value="0" aria-label="Day of the last 7 days; the left end shows all days" hidden>
         <div class="eras" id="eras"></div>
       </div>
     </footer>

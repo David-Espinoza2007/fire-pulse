@@ -197,7 +197,7 @@ function resize(){
   dpr = Math.min(window.devicePixelRatio || 1, 2);
   cv.width = baseC.width = Math.round(W*dpr); cv.height = baseC.height = Math.round(H*dpr); baseSig = '';
   S0 = Math.min(W, H)*0.42;
-  projection.translate([W/2, H/2]); setZoom(zoom);
+  projection.translate([W/2, H/2]).clipExtent([[-100, -100], [W + 100, H + 100]]); setZoom(zoom);   // deep zoom: shapes are cut near the screen, the canvas never fills polygons thousands of pixels wide
   draw(); dirty = false;   // resizing clears the canvas, so repaint now instead of waiting for the next frame
 }
 new ResizeObserver(resize).observe(wrap);
@@ -683,7 +683,7 @@ function drawTiles(g, L, now){
 }
 
 /* ---------- the last 7 days as one binary file: single detections for the whole world, filtered in the page ---------- */
-let PB = null, pbOff = !HAS.live;
+let PB = null, pbOff = !HAS.live, dayPick = -1;   // dayPick: one day of the last 7 days (0 = the first), or -1 for all
 function decodePB(buf){
   const hl = new DataView(buf).getUint32(0, true), h = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl)));
   let off = 4 + hl; off += (-off & 3);
@@ -697,7 +697,7 @@ function decodePB(buf){
 function loadPB(){
   if(pbOff) return;
   fetch('api/live/points.bin').then(r => { if(!r.ok){ const x = new Error(r.status); x.status = r.status; throw x; } return r.arrayBuffer(); })
-    .then(buf => { PB = decodePB(buf); dirty = true; legend(); })
+    .then(buf => { PB = decodePB(buf); $('dRange').max = PB.h.days || 7; $('dRange').hidden = !state.live; dirty = true; legend(); })
     .catch(() => { pbOff = true; });   // keep the per-view request
 }
 const pbStrong = () => PB && PB.h.strong_mw != null ? +PB.h.strong_mw : strongMW();
@@ -706,6 +706,7 @@ function drawPB(g){
   if(qX.length < d.n){ qX = new Float32Array(d.n); qY = new Float32Array(d.n); qI = new Int32Array(d.n); }
   const cls = new Uint8Array(d.n); nQ = 0; l1Shown = {kind:'pb'};
   const visit = (a, b) => { for(let i=a;i<b;i++){
+    if(dayPick >= 0 && d.day[i] !== dayPick) continue;
     const isN = d.flags[i] & 1; if((night && !isN) || (day && isN)) continue;
     const f = d.frp[i]; if(strong && !(f >= smw)) continue;
     if(!projU(d.vx[i], d.vy[i], d.vz[i], 6)) continue;
@@ -734,7 +735,7 @@ function drawFire(g, moving, now){
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   const flat = isFlat(), vb = flat ? viewBounds(0.1) : null, glow = alpha < 0.5 && !moving;
   let lv = 0;
-  if(state.live && PB && zoom >= 1.8){ drawPB(g); lv = 4; }
+  if(state.live && PB && (zoom >= 1.8 || dayPick >= 0)){ drawPB(g); lv = 4; }   // one day has no 0.5 degree grid: single detections at every zoom
   else if(!state.live && state.view !== 'trust' && !tilesOff){
     lv = tileLv = levelFor(PC.k, true);
     if(lv === 0){ cells0(vb, null); sqFlush(g, 0, SQ.n, state.view !== 'anom', 1, glow); tileStat = [0, 0]; }
@@ -1177,10 +1178,12 @@ function syncWhen(){
   $('pYear').value = yearOf(state.t); $('pMonth').value = monOf(state.t);
 }
 
+const liveLabel = () => dayPick < 0 || !PB ? 'Last 7 days' : 'Last 7 days: ' + dShort(new Date(PB.first.getTime() + dayPick*864e5).toISOString().slice(0, 10)) + ' only';
 function renderTime(){
   const t = state.t;
-  $('readout').textContent = state.live ? 'Last 7 days' : `${MONTHS[monOf(t)]} ${yearOf(t)}`;
+  $('readout').textContent = state.live ? liveLabel() : `${MONTHS[monOf(t)]} ${yearOf(t)}`;
   $('tRange').value = t;
+  $('tRange').hidden = state.live && !!PB; $('dRange').hidden = !(state.live && PB);   // in the last 7 days the slider picks a day
   $('sensorNow').textContent = state.live ? 'Newer satellite, first numbers' + (state.harm ? ', adjusted' : ', as reported')
     : state.harm ? (t < AQUA ? 'Older satellite (less certain)' : t < MODEL ? 'Reference satellite' : 'Newer satellite (adjusted)')
     : 'Counts as reported' + (months && months[t].raw.n20 + months[t].raw.snpp > 0 ? ', newer satellites included' : '');
@@ -1364,7 +1367,7 @@ function renderCheck(){
 function setT(t){ state.t = clamp(t, 0, T-1); if(state.t !== T-1) state.pick = true; if(state.live) setLive(false); else renderTime(); }
 function setPlaying(p){
   if(p){ setLive(false); if(state.t >= rng[1] || state.t < rng[0]) setT(rng[0]); }
-  playing = p; playAcc = 0; $('play').textContent = p ? '❚❚ Pause' : `▶ Play ${yearOf(rng[0])}–${yearOf(rng[1])}`;
+  playing = p; playAcc = 0; $('play').textContent = p ? '❚❚ Pause' : `▶ Play ${MON[monOf(rng[0])]} ${yearOf(rng[0])}–${MON[monOf(rng[1])]} ${yearOf(rng[1])}`;
   if(!p) saveHash();
 }
 const check = (name, v) => { const r = document.querySelector(`input[name=${name}][value=${v}]`); if(r) r.checked = true; };
@@ -1602,14 +1605,16 @@ $('wPick').onclick = () => { setPlaying(false); state.pick = true; if(state.live
 $('pYear').onchange = $('pMonth').onchange = () => { setPlaying(false); setT(tOf(+$('pYear').value, +$('pMonth').value)); };
 $('play').onclick = () => setPlaying(!playing);
 for(const id of ['rFrom', 'rTo']) for(const y of YEARS) $(id).add(new Option(y, y));
-$('rFrom').value = YEARS[0]; $('rTo').value = YEARS.at(-1);
-function setRange(){   // the timeline and Play cover only the chosen years
-  const a = +$('rFrom').value, b = +$('rTo').value;
-  rng = [clamp(tOf(Math.min(a, b), 0), 0, T-1), clamp(tOf(Math.max(a, b), 11), 0, T-1)];
+for(const id of ['rFromM', 'rToM']) MON.forEach((m, i) => $(id).add(new Option(m, i)));
+$('rFrom').value = YEARS[0]; $('rTo').value = YEARS.at(-1); $('rFromM').value = monOf(0); $('rToM').value = monOf(T-1);
+function setRange(){   // the timeline and Play cover only the chosen months
+  const a = tOf(+$('rFrom').value, +$('rFromM').value), b = tOf(+$('rTo').value, +$('rToM').value);
+  rng = [clamp(Math.min(a, b), 0, T-1), clamp(Math.max(a, b), 0, T-1)];
   $('tRange').min = rng[0]; $('tRange').max = rng[1]; $('eras').hidden = rng[0] > 0 || rng[1] < T-1;
   setPlaying(false); if(!state.live && (state.t < rng[0] || state.t > rng[1])) setT(clamp(state.t, rng[0], rng[1])); else renderTime();
 }
-$('rFrom').onchange = $('rTo').onchange = setRange;
+$('rFrom').onchange = $('rTo').onchange = $('rFromM').onchange = $('rToM').onchange = setRange;
+$('dRange').addEventListener('input', e => { dayPick = +e.target.value - 1; renderTime(); });   // 0 = all days
 $('speed').onchange = e => { speed = +e.target.value; };
 $('tRange').addEventListener('input', e => { setPlaying(false); setT(+e.target.value); });
 $('dlCsv').onclick = downloadCsv; $('dlHot').onclick = downloadDetections; $('dlBrief').onclick = briefing; $('copyLink').onclick = copyLink;
