@@ -246,6 +246,40 @@ def test_points_bin(client):
         assert p[6] == cols["dburn"][k]
 
 
+def test_month_points(client, tmp_path, monkeypatch):
+    import json, struct
+    from array import array
+    c, app = client
+    (tmp_path / "hotspots/modis").mkdir(parents=True)
+    duckdb.connect().execute(f"""COPY (SELECT * FROM (VALUES
+        (20.0, -100.0, DATE '2010-05-31', 2330, 'Aqua', '80', 40.0, 'D', 0),    -- 16:50 local solar time on 31 May
+        (20.1, -100.1, DATE '2010-06-01', 630, 'Terra', '90', 9.0, 'N', 0),     -- 23:50 local on 31 May
+        (20.2, -100.2, DATE '2010-06-01', 800, 'Terra', '90', 5.0, 'N', 0),     -- 1 June local: not in May
+        (20.3, -100.3, DATE '2010-05-10', 2000, 'Aqua', '20', 5.0, 'D', 0),     -- low confidence: dropped
+        (20.4, -100.4, DATE '2010-05-10', 2000, 'Aqua', '80', 5.0, 'D', 2),     -- not a vegetation fire: dropped
+        (25.0, -100.0, DATE '2010-05-10', 2000, 'Aqua', '80', 5.0, 'D', 0))     -- outside the box
+        t(latitude, longitude, acq_date, acq_time, satellite, confidence, frp, daynight, type))
+        TO '{(tmp_path / "hotspots/modis/2010.parquet").as_posix()}' (FORMAT parquet)""")
+    monkeypatch.setattr(app, "ROOT", tmp_path)
+    get = lambda month, **kw: c.get("/api/points.bin", params={"month": month, "bbox": "-101,19,-99,21"}, **kw)
+    r = get("2010-05")
+    assert r.status_code == 200 and r.headers["content-encoding"] == "gzip"
+    blob = r.content
+    nh = struct.unpack("<I", blob[:4])[0]
+    head, pos = json.loads(blob[4:4 + nh]), 4 + nh + (-(4 + nh) % 4)
+    assert head == {"n": 2, "month": "2010-05", "truncated": False, "sats": ["Aqua", "Terra"]}
+    cols = {}
+    for name, code, size in (("lon", "f", 4), ("lat", "f", 4), ("frp", "f", 4), ("min", "H", 2), ("day", "B", 1), ("flag", "B", 1)):
+        cols[name] = list(array(code, blob[pos:pos + 2 * size]))
+        pos += 2 * size + (-(2 * size) % 4)
+    assert cols["frp"] == [40.0, 9.0] and cols["lat"] == pytest.approx([20.0, 20.1], abs=1e-4)      # strongest first
+    assert cols["day"] == [31, 31] and cols["min"] == [16 * 60 + 50, 23 * 60 + 50] and cols["flag"] == [0, 3]   # Terra (index 1), night
+    assert get("2010-05", headers={"If-None-Match": r.headers["etag"]}).status_code == 304
+    assert struct.unpack("<I", get("2011-01").content[:4])[0] and b'"n": 0' in get("2011-01").content   # the file of the year before is read
+    assert b'"n": 1' in get("2010-06").content and get("2013-03").status_code == 404
+    assert c.get("/api/points.bin", params={"month": "2010-5", "bbox": "-101,19,-99,21"}).status_code == 422
+
+
 def test_trust_endpoint(client):
     c, _ = client
     r = c.get("/api/trust")

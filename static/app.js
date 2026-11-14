@@ -39,7 +39,7 @@ try {
 }
 $('loading').hidden = true;
 // optional parts of the server; each one switches off quietly when its data or endpoint is missing
-const HAS = {night:meta.night === true, states:meta.states === true, places:meta.places === true, live:!!meta.live, trust:meta.trust === true};
+const HAS = {night:meta.night === true, states:meta.states === true, places:meta.places === true, live:!!meta.live, trust:meta.trust === true, points:meta.points === true};
 
 /* time: t = 0 is November 2000 */
 const U = G.units, T = G.months, RES = G.res, NCOL = G.ncol, NROW = Math.round(180/RES), Y0 = 2000, M0 = 10;
@@ -696,7 +696,7 @@ function fallbackSquares(L, box, vb){   // best data already in memory for a til
   }
   cells0(vb, box);
 }
-function drawTiles(g, L, now){
+function drawTiles(g, L, now, a = 1){   // a: paler squares under the single detections
   const vb = tileView(), vis = tilesIn(L, vb), count = state.view !== 'anom', fading = [];
   let ok = 0;
   const from = SQ.n;
@@ -710,10 +710,10 @@ function drawTiles(g, L, now){
       tileSquares(e, L, it.b, it.b, vb);
     } else fallbackSquares(L, it.b, vb);
   }
-  sqFlush(g, from, SQ.n, count, 1, false);
+  sqFlush(g, from, SQ.n, count, a, false);
   for(const [it, e, f] of fading){   // a new tile fades in over the data it replaces
-    let i0 = SQ.n; fallbackSquares(L, it.b, vb); sqFlush(g, i0, SQ.n, count, 1 - f, false);
-    i0 = SQ.n; tileSquares(e, L, it.b, it.b, vb); sqFlush(g, i0, SQ.n, count, f, false);
+    let i0 = SQ.n; fallbackSquares(L, it.b, vb); sqFlush(g, i0, SQ.n, count, (1 - f)*a, false);
+    i0 = SQ.n; tileSquares(e, L, it.b, it.b, vb); sqFlush(g, i0, SQ.n, count, f*a, false);
     dirty = true;
   }
   tileStat = [ok, vis.length - ok];
@@ -767,6 +767,46 @@ function drawPB(g){
   qSide = 6;
 }
 
+/* ---------- a past month at the closest zoom: its single detections, asked for by view (layout in app.py, /api/points.bin) ---------- */
+let MP = null, mpWant = '', mpCtl = null, mpOff = !HAS.points;
+const mpOn = () => !mpOff && !playing && isFlat() && PC.k*0.05*RAD >= 12;   // a square of 5 km is at least 12 px wide
+function loadMP(vb){   // on still frames: one request for the view and a margin, kept until the view leaves it or the month changes
+  const m = ymOf(state.t);
+  if(!vb || (MP && MP.m === m && vb[0] >= MP.box[0] && vb[1] >= MP.box[1] && vb[2] <= MP.box[2] && vb[3] <= MP.box[3])) return;
+  const dx = (vb[2] - vb[0])/4, dy = (vb[3] - vb[1])/4;
+  const box = [Math.max(-180, vb[0] - dx), Math.max(-90, vb[1] - dy), Math.min(180, vb[2] + dx), Math.min(90, vb[3] + dy)].map(v => +v.toFixed(2));
+  const key = m + box; if(key === mpWant) return;
+  mpWant = key; if(mpCtl) mpCtl.abort();
+  const ctl = mpCtl = new AbortController();
+  fetch(`api/points.bin?month=${m}&bbox=${box}`, {signal:ctl.signal})
+    .then(r => { if(!r.ok){ const x = new Error(r.status); x.status = r.status; throw x; } return r.arrayBuffer(); })
+    .then(buf => {
+      const hl = new DataView(buf).getUint32(0, true), h = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl))), n = h.n;
+      let off = 4 + hl; off += (-off & 3);
+      const take = Type => { const a = new Type(buf, off, n); off += n*Type.BYTES_PER_ELEMENT; off += (-off & 3); return a; };
+      const lon = take(Float32Array), lat = take(Float32Array), frp = take(Float32Array), minute = take(Uint16Array), day = take(Uint8Array), flags = take(Uint8Array);
+      const vx = new Float32Array(n), vy = new Float32Array(n), vz = new Float32Array(n);
+      for(let i=0;i<n;i++){ const v = unitOf(lon[i], lat[i]); vx[i] = v[0]; vy[i] = v[1]; vz[i] = v[2]; }
+      MP = {h, m, box, n, frp, minute, day, flags, vx, vy, vz}; dirty = true; legend();
+    })
+    .catch(err => { if(err.status === 404){ mpOff = true; legend(); } });   // this data folder has no detection files
+}
+const SATN = {Terra:'Terra, 1 km pixel', Aqua:'Aqua, 1 km pixel', SNPP:'Suomi NPP, 375 m pixel', N20:'NOAA-20, 375 m pixel'};
+function drawMP(g){   // each detection as a square of its pixel size on the ground, at least 2.5 px
+  const d = MP, tm = state.harm ? mParam().time : null, wide = d.h.sats.map(s => s === 'Terra' || s === 'Aqua');
+  const s375 = Math.max(2.5, PC.k*RAD*0.375/111.2), s1k = Math.max(2.5, PC.k*RAD/111.2);
+  if(qX.length < d.n){ qX = new Float32Array(d.n); qY = new Float32Array(d.n); qI = new Int32Array(d.n); }
+  nQ = 0; l1Shown = {kind:'mp'};
+  g.globalCompositeOperation = 'source-over'; g.globalAlpha = .9; g.fillStyle = C.fg; g.beginPath();
+  for(let i=0;i<d.n;i++){
+    const f = d.flags[i]; if(tm && (tm === 'night') !== !!(f & 1)) continue;
+    if(!projU(d.vx[i], d.vy[i], d.vz[i], 6)) continue;
+    const s = wide[f >> 1] ? s1k : s375; g.rect(PX[0] - s/2, PX[1] - s/2, s, s);
+    qX[nQ] = PX[0]; qY[nQ] = PX[1]; qI[nQ++] = i;
+  }
+  g.fill(); qSide = Math.max(6, s1k/2);
+}
+
 function drawFire(g, moving, now){
   nQ = 0; l1Shown = null; SQ.n = 0;
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -775,8 +815,12 @@ function drawFire(g, moving, now){
   if(state.live && PB && (zoom >= 1.8 || dayPick >= 0)){ drawPB(g); lv = 4; }   // one day has no 0.5 degree grid: single detections at every zoom
   else if(!state.live && state.view !== 'trust' && !tilesOff){
     lv = tileLv = levelFor(PC.k, true);
+    const pts = lv === 3 && mpOn();
+    if(pts && !moving) loadMP(tileView());
+    const mp = pts && MP && MP.m === ymOf(state.t);
     if(lv === 0){ cells0(vb, null); sqFlush(g, 0, SQ.n, state.view !== 'anom', 1, glow); tileStat = [0, 0]; }
-    else drawTiles(g, lv, now);
+    else drawTiles(g, lv, now, mp ? 0.45 : 1);
+    if(mp){ drawMP(g); lv = 5; }
   } else {
     // without tiles or the week file: level 0, and the per-view level 1 once the view has settled (as before)
     const L1 = flat && !playing && l1Cur && l1Cur.base === l1Base() && (state.live || state.view !== 'trust') ? l1Cur : null;
@@ -931,7 +975,7 @@ cv.addEventListener('pointermove', e => {
   if(pinch){
     if(pointers.size < 2) return;
     const [d, mx, my] = pinchAt();
-    setZoom(clamp(pinch.z0*d/pinch.d0, 0.8, 60));
+    setZoom(clamp(pinch.z0*d/pinch.d0, 0.8, 150));
     if(pinch.ll && isFlat()) anchor(pinch.ll, mx, my);
     else { const s = 57.3/projection.scale(); projection.rotate([pinch.r[0] + (mx - pinch.mx)*s, clamp(pinch.r[1] - (my - pinch.my)*s, -80, 80)]); }
     dirty = true; return;
@@ -960,6 +1004,9 @@ cv.addEventListener('pointermove', e => {
       const d = l1Shown;
       if(d.kind === 'pb'){ const P = PB, smw = pbStrong(), dt = new Date(P.first.getTime() + P.day[best]*864e5), mi = P.minute[best];
         showTip(`${dt.getUTCDate()} ${MON[dt.getUTCMonth()]}, ${String(mi/60 | 0).padStart(2, '0')}:${String(mi%60).padStart(2, '0')} local time${P.flags[best] & 1 ? ' (night)' : ''}\n${smw != null && P.frp[best] >= smw ? 'Strong fire. ' : ''}Burning ${P.burn[best]} of ${Math.max(+P.h.days || 7, P.burn[best])} days here`, e.clientX, e.clientY); }
+      else if(d.kind === 'mp'){ const P = MP, mi = P.minute[best], sat = P.h.sats[P.flags[best] >> 1];
+        showTip(`${name}${P.day[best]} ${MON[m]} ${yr}, ${String(mi/60 | 0).padStart(2, '0')}:${String(mi%60).padStart(2, '0')} local time${P.flags[best] & 1 ? ' (night)' : ''}
+${SATN[sat] || sat}${P.frp[best] > 0 ? `, ${+P.frp[best].toFixed(1)} MW` : ''}`, e.clientX, e.clientY); }
       else if(d.kind === 'p'){ const p = d.pts[best], smw = strongMW();
         showTip(`${dShort(p[2])}, ${p[3]} local time${p[5] === 'N' ? ' (night)' : ''}\n${smw != null && p[4] >= smw ? 'Strong fire. ' : ''}Burning ${p[6]} of ${Math.max(d.days, p[6])} days here`, e.clientX, e.clientY); }
       else { const v = d.v[best];
@@ -998,7 +1045,7 @@ cv.addEventListener('pointerleave', () => { tip.hidden = true; });
 cv.addEventListener('wheel', e => {
   e.preventDefault(); fly = null; spin = false; lastWheel = performance.now();
   const [x, y] = local(e), ll = isFlat() ? lonLat(x, y) : null;
-  setZoom(clamp(zoom*Math.exp(-e.deltaY*0.0015), 0.8, 60));
+  setZoom(clamp(zoom*Math.exp(-e.deltaY*0.0015), 0.8, 150));
   if(ll && isFlat()) anchor(ll, x, y);   // flat map: zoom toward the cursor
   dirty = true;
 }, {passive:false});
@@ -1462,7 +1509,8 @@ function setLive(on){
   if(on && !liveCells.has(lcKey())) loadCells();
 }
 function legend(){
-  const tm = state.live || gTime() !== 'all' ? {all:'', day:'day ', night:'night '}[state.time] : '', sq = [50, 25, 10, 5, 5][fireLevel] || 50;
+  const tm = state.live || gTime() !== 'all' ? {all:'', day:'day ', night:'night '}[state.time] : '', sq = [50, 25, 10, 5, 5, 5][fireLevel] || 50;
+  const dots = fireLevel === 5 && MP ? `<span class="lstep"><span class="box" style="background:${C.fg}"></span>one ${tm}detection, any satellite${MP.h.truncated ? ` (the strongest ${fmt(MP.n)})` : ''}</span>` : '';
   const est = state.harm && UNIT[state.unit].est(state.t) ? '<span class="lest">Estimated month, not measured</span>' : '';
   $('legend').innerHTML = state.view === 'trust' && !state.live
     ? !TR ? (TRS ? 'No confidence map for this count yet. Rebuilding the data adds it.' : 'Loading the confidence map…')
@@ -1470,8 +1518,8 @@ function legend(){
         + '<span class="lstep"><span class="box hatch"></span>too few fires to test</span>'
     : state.live && fireLevel === 4 ? `Each dot is one ${tm}fire detection in the last 7 days: ` + ['weak', 'medium', 'strong'].map((w, i) => `<span class="lstep"><span class="dotk" style="background:${PTC[i]}"></span>${w}</span>`).join('')
     : state.live ? `<span>Fewer</span><span class="ramp seq"></span><span>More ${tm}fire detections in the last 7 days, per square of about 50 km</span>`
-    : state.view === 'anom' ? `<span>Lower than normal</span><span class="ramp div"></span><span>Higher than normal for ${MONTHS[monOf(state.t)]}, per square of about ${sq} km</span>${est}`
-    : `<span>Fewer</span><span class="ramp seq"></span><span>More ${tm}${unitWord()} per square of about ${sq} km</span>${est}`;
+    : state.view === 'anom' ? `<span>Lower than normal</span><span class="ramp div"></span><span>Higher than normal for ${MONTHS[monOf(state.t)]}, per square of about ${sq} km</span>${dots}${est}`
+    : `<span>Fewer</span><span class="ramp seq"></span><span>More ${tm}${unitWord()} per square of about ${sq} km</span>${dots}${est}`;
 }
 function toast(msg){ $('toast').textContent = msg; }
 function save(blob, name){ const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }

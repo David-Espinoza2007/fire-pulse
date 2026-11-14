@@ -446,6 +446,41 @@ def tile(request: Request, level: int, tx: int, ty: int):
     return bin_response(request, path.read_bytes(), f'"{st.st_mtime_ns:x}-{st.st_size:x}"')
 
 
+MAX_MONTH_POINTS = 300_000
+
+
+@app.get("/api/points.bin")
+def month_points(request: Request, month: str, bbox: str):
+    """The detections the record counts (H.CLEAN), from all satellites, of one month of local solar dates inside a box.
+
+    Gzip; little-endian, every block padded to a multiple of 4 bytes: uint32 N and N bytes of JSON {n, month, truncated, sats};
+    Float32[n] lon, lat, frp (MW); Uint16[n] minute of the local solar day; Uint8[n] day of the month; Uint8[n] flags
+    (bit 0 = night, the other bits = index into sats). Strongest first, at most MAX_MONTH_POINTS."""
+    w, s, e, n = parse_bbox(bbox)
+    first = datetime.date.fromisoformat(parse_month(month, "month"))
+    years = {str((first - datetime.timedelta(1)).year), str((first + datetime.timedelta(32)).year)}   # a local date can be the UTC date of the next or last year
+    files = [p for p in (ROOT / "hotspots").glob("*/*.parquet") if p.stem in years]
+    if not files:
+        raise HTTPException(404, "no hotspot files for this month")
+    etag = f'"{max(p.stat().st_mtime_ns for p in files):x}-{month}-{w},{s},{e},{n}"'
+    if request.headers.get("if-none-match") == etag:
+        return bin_response(request, b"", etag)   # 304 without running the query
+    rows = db.cursor().execute(f"""
+      SELECT longitude, latitude, coalesce(frp, 0), hour(ts) * 60 + minute(ts), day(ts), coalesce(satellite, '?'), daynight
+      FROM (SELECT *, acq_date + to_minutes(CAST(acq_time // 100 * 60 + acq_time % 100 + round(longitude * 4) AS BIGINT)) AS ts
+            FROM read_parquet({[p.as_posix() for p in files]}, union_by_name = true)
+            WHERE latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ? AND {H.CLEAN})
+      WHERE ts >= CAST(? AS DATE) AND ts < CAST(? AS DATE) + INTERVAL 1 MONTH
+      ORDER BY 3 DESC LIMIT {MAX_MONTH_POINTS + 1}""", [s, n, w, e, first, first]).fetchall()
+    cut = rows[:MAX_MONTH_POINTS]
+    sats = sorted({r[5] for r in cut})
+    head = json.dumps({"n": len(cut), "month": month, "truncated": len(rows) > len(cut), "sats": sats}).encode()
+    arr = lambda code, v: T._pad(array(code, v).tobytes())   # little-endian machines only, like the page
+    data = b"".join((T._pad(struct.pack("<I", len(head)) + head), *(arr("f", [r[i] for r in cut]) for i in range(3)), arr("H", [r[3] for r in cut]),
+                     arr("B", [r[4] for r in cut]), arr("B", [(r[6] == "N") | sats.index(r[5]) << 1 for r in cut])))
+    return bin_response(request, gzip.compress(data, 4, mtime=0), etag)
+
+
 @app.get("/api/live/points")
 def live_points_get(country: str | None = None, bbox: str | None = None, time: str = "all", strong: int = 0):
     """Every detection of the last 7 days in the area: [lon, lat, local date, local time, FRP in MW, D or N, days burning]."""
@@ -636,7 +671,7 @@ def fine_cells(bbox: str, month: str, time: str = "all", normal: int = Query(0, 
 def meta():
     return {"countries": COUNTRIES, "boxes": BOXES, "first": FIRST[:7], "last": LAST[:7], "primary": PRIMARY,
             "aqua_start": H.AQUA_START[:7], "model_start": H.MODEL_START[:7], "data": ROOT.name, "live": LIVE_OK, "static_mask": STATIC_FILE.exists(),
-            "trust": TRUST_FILE.exists(), "night": NIGHT, "states": HAS["states"], "places": HAS["places"], "units": UNITS,
+            "trust": TRUST_FILE.exists(), "points": (ROOT / "hotspots").exists(), "night": NIGHT, "states": HAS["states"], "places": HAS["places"], "units": UNITS,
             "baseline": {"aqua": list(H.BASELINE), **({"viirs": VV["baseline"]} if VV else {})},
             "viirs": {"start": VV["start"][:7], "ref_start": VV["ref_start"][:7], "reference": VV["reference"]} if VV else None}
 

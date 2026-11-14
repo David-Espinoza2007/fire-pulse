@@ -17,7 +17,7 @@ python -m venv .venv
 
 Open http://localhost:8000. Without world data the app reads `data/mx` (Mexico only), so the
 globe glows only over Mexico. The "last 7 days" layer downloads one public FIRMS file (35 MB) on
-first use. Run the tests with `.venv/Scripts/python -m pytest -q` (24 tests).
+first use. Run the tests with `.venv/Scripts/python -m pytest -q`.
 
 Add `?perf=1` to the address to see frame times on the map.
 
@@ -116,6 +116,11 @@ The grid stops at 5 km on purpose. A MODIS pixel is 1 km below the satellite but
 the edge of the scan, and the method must find the same fire in the same cell for both sensors.
 The last 7 days are different: every detection is drawn at its own position.
 
+At the closest zoom (a 5 km square is 12 pixels or more) the page also draws every detection of the
+selected month, from all satellites, as a white square of the pixel size: 375 m for VIIRS, 1 km for
+MODIS. The squares below keep the comparable count; the points show where exactly the fires
+were. This needs the hotspot archive (`<data>/hotspots`).
+
 ## Files
 
 - `harmonize.py` - the method, as DuckDB SQL: grid, conversion tables, calibration, ratios.
@@ -125,7 +130,7 @@ The last 7 days are different: every detection is drawn at its own position.
 - `app.py` - FastAPI. Main endpoints: `/api/calendar` (monthly record for a country, box or
   polygon, with day/night filter), `/api/tiles/{level}/{tx}/{ty}` (map tiles with all months),
   `/api/live*` (last 7 days: totals, "where to look first", and `/api/live/points.bin` with every
-  detection of the week), `/api/states`, `/api/places`, `/api/validation`, `/api/trust` (test
+  detection of the week), `/api/points.bin` (every detection of one month in a box), `/api/states`, `/api/places`, `/api/validation`, `/api/trust` (test
   error per square of 1 degree, for the confidence map), `/api/hotspots.csv`,
   `/api/globe.bin` (the 50 km grid for the whole globe).
 - `tiles.py` - builds the map tiles (binary layout in its first lines).
