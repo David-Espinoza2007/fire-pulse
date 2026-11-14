@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fire Pulse: where is it burning, and is it normal</title>
+<meta name="description" content="25 years of satellite fire detections in one comparable record, and the last 7 days, for any country, state or drawn area.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%A5%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side ask" id="ask" aria-label="Your question">
+    <div class="brand">
+      <span class="brand-name">Fire Pulse</span>
+      <span class="tag">Where it burns, and whether that is normal</span>
+    </div>
+    <h2 class="side-title">Your question</h2>
+
+    <section class="step" aria-labelledby="s1">
+      <h3 id="s1"><span class="num">1</span>Where?</h3>
+      <form id="searchForm" class="search" autocomplete="off">
+        <label class="sr" for="q">Find a country</label>
+        <input id="q" list="places" placeholder="Country, e.g. Mexico">
+        <datalist id="places"></datalist>
+        <button type="submit" class="btn">Go</button>
+      </form>
+      <label class="field" id="stateWrap" hidden>State or province
+        <select id="stateSel"><option value="">Whole country</option></select>
+      </label>
+      <div class="chips" id="chips"></div>
+      <div class="actions">
+        <button type="button" class="btn" id="boxDraw" aria-pressed="false">Draw a box</button>
+        <button type="button" class="btn" id="polyDraw" aria-pressed="false">Draw a shape</button>
+        <button type="button" class="btn" id="polyDone" hidden>Finish shape</button>
+        <button type="button" class="btn" id="wholeBtn">Whole planet</button>
+      </div>
+      <details class="area" id="area">
+        <summary>Type coordinates</summary>
+        <div class="area-grid">
+          <label>North<input id="bN" type="number" step="0.05" min="-90" max="90" placeholder="31.8"></label>
+          <label>South<input id="bS" type="number" step="0.05" min="-90" max="90" placeholder="25.5"></label>
+          <label>West<input id="bW" type="number" step="0.05" min="-180" max="180" placeholder="-109.1"></label>
+          <label>East<input id="bE" type="number" step="0.05" min="-180" max="180" placeholder="-103.3"></label>
+        </div>
+        <button type="button" class="btn" id="boxApply">Use these bounds</button>
+        <p class="hint">Degrees. South and west are negative. Areas are cut on a grid of about 5 km.</p>
+      </details>
+    </section>
+
+    <section class="step" aria-labelledby="s2">
+      <h3 id="s2"><span class="num">2</span>When?</h3>
+      <div class="seg wrap" role="group" aria-labelledby="s2">
+        <button type="button" id="wLive" aria-pressed="false" hidden>Last 7 days</button>
+        <button type="button" id="wLatest" aria-pressed="true">Latest month</button>
+        <button type="button" id="wPick" aria-pressed="false">Pick a month</button>
+      </div>
+      <div class="pick" id="pickWrap" hidden>
+        <label class="field">Month<select id="pMonth"></select></label>
+        <label class="field">Year<select id="pYear"></select></label>
+      </div>
+    </section>
+
+    <details class="step more" id="moreOpts" hidden><summary>More options</summary></details>
+
+    <fieldset class="step" id="stepShow">
+      <legend><span class="num">3</span>Show on the map</legend>
+      <label class="opt"><input type="radio" name="view" value="count" checked> Amount of fire</label>
+      <label class="opt"><input type="radio" name="view" value="anom"> Compared with normal</label>
+      <label class="opt"><input type="radio" name="view" value="trust"> Confidence in the numbers</label>
+    </fieldset>
+
+    <fieldset class="step" id="stepOnly">
+      <legend><span class="num">4</span>Only count</legend>
+      <label class="opt"><input type="radio" name="time" value="all" checked> All fires</label>
+      <label class="opt"><input type="radio" name="time" value="day" id="tDay"> Day fires
+        <span class="opt-help">Seen at about 1:30 p.m., when most fires are lit and spread.</span></label>
+      <label class="opt"><input type="radio" name="time" value="night" id="tNight"> Night fires
+        <span class="opt-help">Fires still burning at about 1:30 a.m. are usually not under control.</span></label>
+      <p class="hint" id="timeNote" hidden>Day and night for months: available after the data is rebuilt. It works for the last 7 days.</p>
+      <label class="opt check" id="strongWrap"><input type="checkbox" id="strong"> Strong fires only
+        <span class="opt-help">Last 7 days only: hides weak heat, such as small field burns.</span></label>
+    </fieldset>
+
+    <details class="step adv">
+      <summary>Advanced</summary>
+      <fieldset class="inner">
+        <legend>Counts</legend>
+        <label class="opt"><input type="radio" name="counts" value="harm" checked> Comparable across years (recommended)</label>
+        <label class="opt"><input type="radio" name="counts" value="raw"> As the satellites reported</label>
+      </fieldset>
+      <div class="pick">
+        <label class="field">Downloads from<select id="yFrom"></select></label>
+        <label class="field">to<select id="yTo"></select></label>
+      </div>
+      <button type="button" class="btn" id="aboutBtn">How it works</button>
+    </details>
+
+    <p class="foot" id="foot">A fire detection is a place where a satellite saw the heat of a fire. A large fire gives many detections.</p>
+  </aside>
+
+  <main class="mid">
+    <section class="globe" id="globe" aria-label="Map of fire detections">
+      <canvas id="cv"></canvas>
+      <p class="map-title" id="mapTitle"></p>
+      <div class="legend" id="legend"></div>
+      <p class="howto" id="howto">Drag to spin. Scroll to zoom. Click a country to fly in.</p>
+      <p id="loading" class="center-msg">Loading 25 years of fire detections…</p>
+      <p id="loadErr" class="center-msg" hidden>The data did not load. Start the server (see the README) and reload.</p>
+    </section>
+    <footer class="dock">
+      <button type="button" id="play" class="btn">▶ Play</button>
+      <div class="time">
+        <div class="time-top">
+          <label for="tRange" class="readout" id="readout"></label>
+          <span class="muted" id="sensorNow"></span>
+        </div>
+        <input type="range" id="tRange" min="0" max="299" step="1" value="299">
+        <div class="eras" id="eras"></div>
+      </div>
+    </footer>
+  </main>
+
+  <aside class="side panel" id="panel" aria-label="The answer">
+    <h2 class="side-title">The answer</h2>
+    <div aria-live="polite">
+      <p class="eyebrow" id="pKind">Whole planet</p>
+      <h2 class="place" id="pName">Earth</h2>
+      <p class="sub" id="pSub"></p>
+    </div>
+
+    <section class="status" id="status" aria-live="polite">
+      <p class="st-level"><span class="v-icon" id="stIcon" aria-hidden="true"></span><span id="stLevel"></span></p>
+      <p class="st-line" id="stLine"></p>
+      <p class="st-src" id="stSrc"></p>
+    </section>
+
+    <div class="tiles" id="tiles"></div>
+
+    <section class="sec" id="lookSec" hidden>
+      <h3>Where to look first</h3>
+      <p class="hint" id="lookSub"></p>
+      <p class="hint" id="lookNote" hidden></p>
+      <ol class="look" id="look"></ol>
+      <button type="button" class="link" id="lookMore" hidden>Show all</button>
+    </section>
+
+    <section class="sec">
+      <div class="sec-head"><h3>Season so far</h3><span id="seasonSpan"></span></div>
+      <div class="season" id="season"></div>
+      <div class="key">
+        <span><span class="sw"></span><span id="keyYear">This season</span></span>
+        <span><span class="sw med"></span>Normal season</span>
+        <span><span class="sw band"></span>8 of 10 seasons</span>
+      </div>
+    </section>
+
+    <section class="sec">
+      <div class="sec-head"><h3>Fire calendar</h3>
+        <div class="seg small" role="group" aria-label="Calendar view">
+          <button type="button" id="cGrid" aria-pressed="true">Grid</button>
+          <button type="button" id="cRings" aria-pressed="false">Fire rings</button>
+        </div>
+      </div>
+      <div class="cal" id="cal"></div>
+      <div class="key"><span id="calLo">Fewer</span><span class="ramp seq" id="calRamp"></span><span id="calHi">More</span><span id="calUnit"></span></div>
+      <p class="hint">Click a month to see it.</p>
+    </section>
+
+    <section class="sec">
+      <div class="sec-head"><h3>Year by year</h3><span id="yearsUnit"></span></div>
+      <div class="season" id="years"></div>
+      <div class="key" id="yearsKey"></div>
+      <p class="note" id="rawNote" hidden>These are the counts as the satellites reported them. The newer satellites see many more small fires, so years before and after 2012 cannot be compared.</p>
+      <div class="actions"><button type="button" class="btn" id="ghost" aria-pressed="false">Show an estimate of small fires</button></div>
+      <p class="hint" id="ghostNote" hidden></p>
+    </section>
+
+    <section class="sec" id="extraSec" hidden>
+      <div class="extra" id="extra"></div>
+    </section>
+
+    <details class="sec trust" id="trustBox">
+      <summary>Can I trust this?</summary>
+      <div class="sec-head"><span>Monthly check</span><span id="checkSpan"></span></div>
+      <div class="season" id="check"></div>
+      <div class="key">
+        <span><span class="sw"></span>Aqua MODIS, measured</span>
+        <span><span class="sw conv"></span>VIIRS, adjusted (not used to fit it)</span>
+      </div>
+      <p class="hint" id="checkLine"></p>
+      <ul class="limits">
+        <li>Clouds hide fires. A cloudy month looks like a quiet month.</li>
+        <li>Since 2022 the adjusted numbers cannot be checked against the reference satellite.</li>
+        <li>The last 7 days are first numbers and can change.</li>
+      </ul>
+      <button type="button" class="link" id="trustAbout">How it works</button>
+    </details>
+
+    <section class="actions out">
+      <button type="button" class="btn" id="dlBrief">Make a briefing</button>
+      <button type="button" class="btn" id="copyLink">Copy link</button>
+      <button type="button" class="btn" id="dlCsv">Download table (CSV)</button>
+      <button type="button" class="btn" id="dlHot">Download detections (CSV)</button>
+      <p class="toast" id="toast" role="status"></p>
+    </section>
+  </aside>
+</div>
+
+<dialog id="about">
+  <form method="dialog"><button class="btn close" aria-label="Close">Close</button></form>
+  <div id="aboutBody"></div>
+</dialog>
+<div id="tip" class="tip" hidden></div>
+
+<script src="vendor/d3.min.js"></script>
+<script src="vendor/topojson-client.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

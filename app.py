@@ -1,0 +1,578 @@
+"""API and web page for the harmonized fire calendar.
+
+    uvicorn app:app --port 8000
+
+Reads the tables that pipeline.py wrote under data/world (or data/mx, or $FIRE_DATA).
+"""
+import csv
+import datetime
+import io
+import json
+import calendar as cal
+import math
+import os
+import re
+import threading
+import time
+import urllib.request
+from pathlib import Path
+
+import duckdb
+from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+
+import harmonize as H
+
+HERE = Path(__file__).parent
+ROOT = Path(os.environ.get("FIRE_DATA") or next(
+    (p for p in (HERE / "data/world", HERE / "data/mx") if (p / "serve/monthly.parquet").exists()), HERE / "data/world"))
+if not (ROOT / "serve/monthly.parquet").exists():
+    raise SystemExit(f"No data in {ROOT}. Run: python pipeline.py --root data/mx --countries Mexico")
+
+VAL = json.loads((ROOT / "serve/validation.json").read_text())
+PRIMARY = VAL["primary"]
+db = duckdb.connect()
+for t in ("monthly", "monthly_country", "globe"):
+    db.execute(f"CREATE VIEW {t} AS SELECT * FROM read_parquet('{(ROOT / 'serve').as_posix()}/{t}.parquet')")
+try:   # polygons need the spatial extension; without it a polygon is treated as its bounding box
+    db.execute("INSTALL spatial; LOAD spatial")
+    SPATIAL = True
+except Exception:
+    SPATIAL = False
+FIRST = "2000-11-01"
+LAST = db.execute("SELECT max(month) FROM monthly_country").fetchone()[0].isoformat()
+BOXES = {c: [round(v, 2) for v in box] for c, *box in db.execute(
+    f"SELECT * FROM read_parquet('{(ROOT / 'serve').as_posix()}/countries.parquet')").fetchall()}
+COUNTRIES = list(BOXES)
+COLS = {r[0] for r in db.execute("DESCRIBE monthly").fetchall()}
+NIGHT, FRP = "harm_night" in COLS, "frp" in COLS   # data built before day/night and FRP existed lacks these columns
+REF = HERE / "data/reference"   # Natural Earth states and places, shared by every data root (see reference.py)
+for t in ("states", "places"):
+    if (REF / f"{t}.parquet").exists():
+        db.execute(f"CREATE VIEW ref_{t} AS SELECT * FROM read_parquet('{(REF / f'{t}.parquet').as_posix()}')")
+HAS = {t: (REF / f"{t}.parquet").exists() for t in ("states", "places")}
+RAW = ("raw_terra", "raw_aqua", "raw_n20", "raw_snpp", "pred_n20", "pred_snpp", "fill")
+MAX_EXPORT = 500_000
+
+# Live layer: the public FIRMS file with the last 7 days of NOAA-20 detections (no key needed),
+# converted with the tables the pipeline saved. Near-real-time data, so the result is provisional.
+LIVE_URL = "https://firms.modaps.eosdis.nasa.gov/data/active_fire/noaa-20-viirs-c2/csv/J1_VIIRS_C2_Global_7d.csv"
+# every model table must be there: data built before a table was added must not stop the server
+LIVE_OK = (PRIMARY == "N20" and (ROOT / "serve/cell_country.parquet").exists()
+           and all((ROOT / "serve/model" / f"{t}.parquet").exists() for t in H.MODEL_TABLES))
+if LIVE_OK:
+    for t in H.MODEL_TABLES:
+        db.execute(f"CREATE VIEW m_{t} AS SELECT * FROM read_parquet('{(ROOT / 'serve/model').as_posix()}/{t}.parquet')")
+    db.execute(f"CREATE VIEW cell_country AS SELECT * FROM read_parquet('{(ROOT / 'serve').as_posix()}/cell_country.parquet')")
+LIVE_FILE = ROOT / "live.csv"
+STATIC_FILE = ROOT / "serve/static.parquet"   # from pipeline.static_cells; absent on data built before it existed
+GONE_C = "(SELECT * FROM live_gone LEFT JOIN cell_country USING (cell_x, cell_y))"
+LIVE_C = "(SELECT * FROM live LEFT JOIN cell_country USING (cell_x, cell_y))"
+DET_C = "(SELECT * FROM live_det LEFT JOIN cell_country USING (cell_x, cell_y))"
+TIMES = {"all": None, "day": "daynight = 'D'", "night": "daynight = 'N'"}
+live_lock, live_state = threading.Lock(), {"loaded": 0.0}
+
+
+def load_live():
+    """Download (at most once per hour) and convert the last 7 days. -> {"from": date, "to": date}"""
+    if not LIVE_OK:
+        raise HTTPException(404, "live layer needs the saved conversion tables for NOAA-20")
+    with live_lock:
+        if time.time() - live_state["loaded"] > 3600:
+            path = LIVE_FILE
+            try:
+                urllib.request.urlretrieve(LIVE_URL, path.with_suffix(".part"))
+                os.replace(path.with_suffix(".part"), path)
+            except OSError:
+                if not path.exists():   # offline and nothing cached
+                    raise HTTPException(503, "FIRMS live file not reachable")
+            cur = db.cursor()
+            # the live file has no type column: drop cells that the archive shows are gas flares, volcanoes or other static sources
+            gone = f"(cx, cy) IN (SELECT cell_x, cell_y FROM read_parquet('{STATIC_FILE.as_posix()}'))" if STATIC_FILE.exists() else "false"
+            cur.execute(f"""CREATE OR REPLACE TABLE live_raw AS
+              SELECT *, CAST(floor(longitude / {H.CELL}) AS INT) AS cx, CAST(floor(latitude / {H.CELL}) AS INT) AS cy FROM (
+                SELECT latitude, longitude, acq_date, CAST(acq_time AS SMALLINT) AS acq_time, 'N20' AS satellite, confidence,
+                       frp, daynight, CAST(NULL AS TINYINT) AS type, CAST(NULL AS VARCHAR) AS country
+                FROM read_csv('{path.as_posix()}', types = {{'acq_date': 'DATE', 'acq_time': 'VARCHAR', 'confidence': 'VARCHAR'}}))""")
+            cur.execute(f"ALTER TABLE live_raw ADD COLUMN gone BOOLEAN; UPDATE live_raw SET gone = {gone}")
+            cur.execute(f"CREATE OR REPLACE TABLE live_gone AS SELECT cx AS cell_x, cy AS cell_y FROM live_raw WHERE gone AND {H.CLEAN}")
+            src = "(SELECT * EXCLUDE (cx, cy, gone) FROM live_raw WHERE NOT gone)"
+            cur.execute(f"CREATE OR REPLACE TABLE live_cp AS {H.cell_pass_sql(src, 'N20')}")
+            cur.execute(f"""CREATE OR REPLACE TABLE live AS
+                            SELECT cell_x, cell_y, daynight, n_pixels, est_table AS harm FROM ({H.apply('m', 'live_cp', 'TRUE')})""")
+            # one row per detection, cleaned like H.CLEAN; local solar time = UTC + longitude / 15 hours
+            cur.execute(f"""CREATE OR REPLACE TABLE live_det AS
+              SELECT d.*, y.days FROM (
+                SELECT longitude AS lon, latitude AS lat, CAST(ts AS DATE) AS d, strftime(ts, '%H:%M') AS t, frp, daynight,
+                       CAST(floor(longitude / {H.CELL}) AS INT) AS cell_x, CAST(floor(latitude / {H.CELL}) AS INT) AS cell_y
+                FROM (SELECT *, acq_date + to_minutes(CAST(acq_time // 100 * 60 + acq_time % 100 + round(longitude * 4) AS BIGINT)) AS ts
+                      FROM {src} WHERE satellite = 'N20' AND {H.CLEAN})) d
+              JOIN (SELECT cell_x, cell_y, count(DISTINCT d) AS days FROM (
+                      SELECT CAST(floor(longitude / {H.CELL}) AS INT) AS cell_x, CAST(floor(latitude / {H.CELL}) AS INT) AS cell_y,
+                             CAST(acq_date + to_minutes(CAST(acq_time // 100 * 60 + acq_time % 100 + round(longitude * 4) AS BIGINT)) AS DATE) AS d
+                      FROM {src} WHERE satellite = 'N20' AND {H.CLEAN}) GROUP BY 1, 2) y USING (cell_x, cell_y)""")
+            strong = cur.execute("SELECT round(quantile_cont(frp, 0.9)) FROM live_det").fetchone()[0]
+            first, last = cur.execute("SELECT min(acq_date), max(acq_date) FROM live_raw").fetchone()
+            live_state.update(loaded=time.time(), strong_mw=strong or 0, masked=STATIC_FILE.exists(), **{"from": first.isoformat(), "to": last.isoformat()})
+    return {"from": live_state["from"], "to": live_state["to"]}
+
+app = FastAPI(title="Fire calendar")
+
+
+def parse_bbox(text):
+    try:
+        w, s, e, n = (float(x) for x in text.split(","))
+    except ValueError:
+        raise HTTPException(422, "bbox must be west,south,east,north")
+    if not (-180 <= w < e <= 180 and -90 <= s < n <= 90):
+        raise HTTPException(422, "bbox must satisfy -180 <= west < east <= 180 and -90 <= south < north <= 90")
+    return w, s, e, n
+
+
+def parse_month(text, name):
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", text):
+        raise HTTPException(422, f"{name} must be YYYY-MM")
+    return text + "-01"
+
+
+def poly_points(geom):
+    """-> (xs, ys) over all coordinates of a Polygon or MultiPolygon, or HTTP 422."""
+    try:
+        polys = [geom["coordinates"]] if geom["type"] == "Polygon" else geom["coordinates"]
+        assert geom["type"] in ("Polygon", "MultiPolygon") and polys and all(polys)
+        assert all(len(ring) >= 4 for poly in polys for ring in poly)
+        pts = [p for poly in polys for ring in poly for p in ring]
+        assert len(pts) <= 20000
+        xs, ys = [float(p[0]) for p in pts], [float(p[1]) for p in pts]
+        assert all(map(math.isfinite, xs + ys))
+    except (KeyError, IndexError, TypeError, ValueError, AssertionError):
+        raise HTTPException(422, "polygon must be a GeoJSON Polygon or MultiPolygon with at most 20000 points")
+    return xs, ys
+
+
+def area(country, bbox, polygon, cells="monthly", by_country="monthly_country"):
+    """-> (table and WHERE clause, parameters) for the selected area."""
+    if country == "World":
+        return by_country, []
+    if country:
+        if country not in COUNTRIES:
+            raise HTTPException(404, "unknown country")
+        return f"{by_country} WHERE country = ?", [country]
+    if polygon:
+        xs, ys = poly_points(polygon)
+        bbox = f"{min(xs)},{min(ys)},{max(xs)},{max(ys)}"
+    if not bbox:
+        raise HTTPException(422, "give a country, a bbox or a polygon")
+    w, s, e, n = parse_bbox(bbox)
+    cx, cy = f"(cell_x + 0.5) * {H.CELL}", f"(cell_y + 0.5) * {H.CELL}"   # a cell belongs to the area that holds its center
+    sql = (f"{cells} WHERE cell_y BETWEEN ? AND ? AND cell_x BETWEEN ? AND ? "
+           f"AND {cx} >= ? AND {cx} < ? AND {cy} >= ? AND {cy} < ?")
+    params = [math.floor(s / H.CELL) - 1, math.floor(n / H.CELL) + 1, math.floor(w / H.CELL) - 1,
+              math.floor(e / H.CELL) + 1, w, e, s, n]
+    if polygon and SPATIAL:
+        sql += f" AND ST_Contains(ST_GeomFromGeoJSON(?), ST_Point({cx}, {cy}))"
+        params.append(json.dumps({"type": polygon["type"], "coordinates": polygon["coordinates"]}))
+    return sql, params
+
+
+def add(src, *conds):
+    """Append conditions to the output of area()."""
+    for c in conds:
+        if c:
+            src += (" AND " if " WHERE " in src else " WHERE ") + c
+    return src
+
+
+def run(sql, params=(), polygon=None):
+    try:
+        return db.cursor().execute(sql, list(params))
+    except duckdb.Error as err:
+        if polygon:
+            raise HTTPException(422, f"polygon could not be used: {str(err)[:120]}")
+        raise
+
+
+def parse_time(text):
+    if text not in TIMES:
+        raise HTTPException(422, "time must be all, day or night")
+    return text
+
+
+def bounds(value, table):
+    """Range of a converted value, from the spread seen on held-out data for values of this size."""
+    row = next((r for r in reversed(table) if r["lo"] <= value), None)
+    return (value * row["q10"], value * row["q90"]) if row else (value, value)
+
+
+def calendar(country, bbox, polygon, start, end, method, fmt, time="all"):
+    if method not in ("table", "ratio"):
+        raise HTTPException(422, "method must be table or ratio")
+    parse_time(time)
+    if method == "ratio" and time != "all":
+        raise HTTPException(422, "method ratio works with time all only")
+    if time != "all" and not NIGHT:
+        raise HTTPException(409, "Rebuild the data to use this filter")
+    src, params = area(country, bbox, polygon)
+    start, end = parse_month(start, "start"), parse_month(end, "end")
+    value = {"all": "harm" if method == "table" else "harm_ratio", "night": "harm_night", "day": "harm - harm_night"}[time]
+    extra = f"{'sum(harm_night)' if NIGHT else '0'} AS night, {'sum(frp)' if FRP else '0'} AS frp"
+    cur = db.cursor().execute(f"""
+      WITH a AS (SELECT month, sum({value}) AS v, {extra}, {', '.join(f'sum({c}) AS {c}' for c in RAW)} FROM {src} GROUP BY month),
+           s AS (SELECT g.month, coalesce(a.v, 0) AS v, coalesce(a.night, 0) AS night, coalesce(a.frp, 0) AS frp,
+                        {', '.join(f'coalesce(a.{c}, 0) AS {c}' for c in RAW)}
+                 FROM (SELECT CAST(unnest(generate_series(DATE '{FIRST}', DATE '{LAST}', INTERVAL 1 MONTH)) AS DATE) AS month) g
+                 LEFT JOIN a ON a.month = g.month),
+           r AS (SELECT *, rank() OVER (PARTITION BY month(month) ORDER BY v DESC) AS rank FROM s),
+           b AS (SELECT month(month) AS m, quantile_cont(v, {H.QUANTILES}) AS q, median(night) AS night_median, median(frp) AS frp_median FROM s
+                 WHERE year(month) BETWEEN {H.BASELINE[0]} AND {H.BASELINE[1]} GROUP BY 1)
+      SELECT r.*, b.q[3] AS median, b.night_median, b.frp_median, {H.anomaly_sql('r.v', 'b.q')} AS anomaly
+      FROM r JOIN b ON b.m = month(r.month) WHERE r.month BETWEEN ? AND ? ORDER BY r.month""", params + [start, end])
+    names = [d[0] for d in cur.description]
+    months = []
+    for rec in (dict(zip(names, row)) for row in cur.fetchall()):
+        iso = rec["month"].isoformat()
+        source = "terra_scaled" if iso < H.AQUA_START else "aqua" if iso < H.MODEL_START else f"{PRIMARY.lower()}_model"
+        table = {"terra_scaled": VAL["terra"]["range"], "aqua": []}.get(source, VAL["satellites"][PRIMARY]["range"])
+        low, high = bounds(rec["v"], table)
+        months.append({"month": iso[:7], "harmonized": round(rec["v"], 1), "low": round(low, 1), "high": round(high, 1),
+                       "median": round(rec["median"], 1), "anomaly": rec["anomaly"], "rank": rec["rank"], "source": source,
+                       "night": round(rec["night"], 1) if NIGHT else None, "night_median": round(rec["night_median"], 1) if NIGHT else None,
+                       "frp": round(rec["frp"], 1) if FRP else None, "frp_median": round(rec["frp_median"], 1) if FRP else None,
+                       "filled": round(rec["fill"], 1),   # part that replaces days when Aqua did not record
+                       "raw": {c[4:]: int(rec[c]) for c in RAW[:4]}, "pred": {c[5:]: round(rec[c], 1) for c in RAW[4:6]}})
+    if fmt == "csv":
+        out = io.StringIO()
+        w = csv.writer(out)
+        w.writerow(["month", "harmonized", "low", "high", "median", "anomaly", "source",
+                    "raw_terra", "raw_aqua", "raw_n20", "raw_snpp"])
+        for m in months:
+            w.writerow([m["month"], m["harmonized"], m["low"], m["high"], m["median"], m["anomaly"], m["source"], *m["raw"].values()])
+        return Response(out.getvalue(), media_type="text/csv",
+                        headers={"Content-Disposition": "attachment; filename=fire_calendar.csv"})
+    return {"unit": VAL["unit"], "baseline": VAL["baseline"], "method": method,
+            "polygon_exact": bool(polygon and SPATIAL), "time": time, "months": months}
+
+
+@app.get("/api/calendar")
+def calendar_get(country: str | None = None, bbox: str | None = None, start: str = FIRST[:7], end: str = LAST[:7],
+                 method: str = "table", format: str = "json", time: str = "all"):
+    return calendar(country, bbox, None, start, end, method, format, time)
+
+
+@app.post("/api/calendar")
+def calendar_post(body: dict = Body(...)):
+    return calendar(None, None, body.get("polygon"), body.get("start", FIRST[:7]), body.get("end", LAST[:7]),
+                    body.get("method", "table"), body.get("format", "json"), body.get("time", "all"))
+
+
+def live(country, bbox, polygon, time="all"):
+    state = load_live()
+    tc = TIMES[parse_time(time)]
+    src, params = area(country, bbox, polygon, "live", LIVE_C)
+    raw, harm, night = run(f"""SELECT coalesce(sum(n_pixels), 0), coalesce(sum(harm), 0),
+                               coalesce(sum(n_pixels) FILTER (daynight = 'N'), 0) FROM {add(src, tc)}""", params, polygon).fetchone()
+    src, params = area(country, bbox, polygon, "live_det", DET_C)
+    strong = run(f"SELECT count(*) FROM {add(src, tc, 'frp >= ?')}", params + [live_state["strong_mw"]], polygon).fetchone()[0]
+    src, params = area(country, bbox, polygon, "live_gone", GONE_C)
+    removed = run(f"SELECT count(*) FROM {src}", params, polygon).fetchone()[0] if live_state["masked"] else None   # inside the selected area
+    return {**state, "static_removed": removed, "raw": int(raw), "harmonized": round(harm, 1), "sensor": "VIIRS NOAA-20, near-real-time",
+            "night_share": round(night / raw, 3) if raw else 0, "strong": strong, "strong_mw": live_state["strong_mw"]}
+
+
+@app.get("/api/live")
+def live_get(country: str | None = None, bbox: str | None = None, time: str = "all"):
+    """Last 7 days in the selected area: raw detections and MODIS-equivalent hotspots."""
+    return live(country, bbox, None, time)
+
+
+@app.post("/api/live")
+def live_post(body: dict = Body(...)):
+    return live(None, None, body.get("polygon"), body.get("time", "all"))
+
+
+@app.get("/api/live/cells")
+def live_cells(time: str = "all"):
+    """Last 7 days as 0.5 degree cells: [west, south, raw detections, harmonized]."""
+    state = load_live()
+    cur = db.cursor().execute(f"""SELECT floor(cell_x / 10.0) * 0.5, floor(cell_y / 10.0) * 0.5, sum(n_pixels), round(sum(harm), 1)
+                                 FROM {add('live', TIMES[parse_time(time)])} GROUP BY 1, 2""")
+    return {**state, "cells": cur.fetchall()}
+
+
+MAX_POINTS = 20000
+
+
+def live_points(country, bbox, polygon, time, strong):
+    state = load_live()
+    if strong not in (0, 1, "0", "1", True, False):
+        raise HTTPException(422, "strong must be 0 or 1")
+    src, params = area(country, bbox, polygon, "live_det", DET_C)
+    src = add(src, TIMES[parse_time(time)], "frp >= ?" if int(strong) else None)
+    if int(strong):
+        params = params + [live_state["strong_mw"]]
+    rows = run(f"""SELECT round(lon, 4), round(lat, 4), CAST(d AS VARCHAR), t, round(frp, 1), daynight, days FROM {src}
+                   ORDER BY frp DESC NULLS LAST LIMIT {MAX_POINTS + 1}""", params, polygon).fetchall()
+    return {"from": state["from"], "to": state["to"], "truncated": len(rows) > MAX_POINTS, "points": [list(r) for r in rows[:MAX_POINTS]]}
+
+
+@app.get("/api/live/points")
+def live_points_get(country: str | None = None, bbox: str | None = None, time: str = "all", strong: int = 0):
+    """Every detection of the last 7 days in the area: [lon, lat, local date, local time, FRP in MW, D or N, days burning]."""
+    return live_points(country, bbox, None, time, strong)
+
+
+@app.post("/api/live/points")
+def live_points_post(body: dict = Body(...)):
+    return live_points(None, None, body.get("polygon"), body.get("time", "all"), body.get("strong", 0))
+
+
+COMPASS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+
+
+def km_between(lon1, lat1, lon2, lat2):
+    p1, p2, dl = math.radians(lat1), math.radians(lat2), math.radians(lon2 - lon1)
+    a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 12742 * math.asin(math.sqrt(a))
+
+
+def label_for(lon, lat):
+    """'12 km NE of Ocosingo' for the nearest populated place within 150 km, else None."""
+    if not HAS["places"]:
+        return None
+    dx = 1.6 / max(math.cos(math.radians(lat)), 0.2)
+    best = min(((km_between(lon, lat, x, y), name, x, y) for name, x, y in db.cursor().execute(
+        "SELECT name, lon, lat FROM ref_places WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?",
+        [lat - 1.6, lat + 1.6, lon - dx, lon + dx]).fetchall()), default=None)
+    if not best or best[0] > 150:
+        return None
+    km, name, x, y = best
+    if km < 5:
+        return f"Near {name}"
+    bearing = math.degrees(math.atan2((lon - x) * math.cos(math.radians(y)), lat - y)) % 360
+    return f"{round(km)} km {COMPASS[round(bearing / 45) % 8]} of {name}"
+
+
+def live_places(country, bbox, polygon, time):
+    state = load_live()
+    tc = TIMES[parse_time(time)]
+    src, params = area(country, bbox, polygon, "live_det", DET_C)
+    cells = {(x, y): (n, fmax or 0, nn, set(ds)) for x, y, n, fmax, nn, ds in run(
+        f"""SELECT cell_x, cell_y, count(*), max(frp), count(*) FILTER (daynight = 'N'), list(DISTINCT d) FROM {add(src, tc)}
+            GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 3000""", params, polygon).fetchall()}
+    src, params = area(country, bbox, polygon, "live", LIVE_C)
+    harm = dict(((x, y), h) for x, y, h in run(f"SELECT cell_x, cell_y, sum(harm) FROM {add(src, tc)} GROUP BY 1, 2", params, polygon).fetchall())
+    groups, seen = [], set()   # touching cells (8 neighbors)
+    for start in cells:
+        if start in seen:
+            continue
+        seen.add(start)
+        stack, members = [start], []
+        while stack:
+            x, y = stack.pop()
+            members.append((x, y))
+            for nb in ((x + i, y + j) for i in (-1, 0, 1) for j in (-1, 0, 1)):
+                if nb in cells and nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+        n = sum(cells[c][0] for c in members)
+        groups.append({"cells": members, "detections": n, "days": len(set().union(*(cells[c][3] for c in members))),
+                       "frp_max": max(cells[c][1] for c in members), "night": sum(cells[c][2] for c in members) * 2 > n,
+                       "harmonized": sum(harm.get(c, 0) for c in members),
+                       "lon": sum((c[0] + 0.5) * H.CELL * cells[c][0] for c in members) / n,
+                       "lat": sum((c[1] + 0.5) * H.CELL * cells[c][0] for c in members) / n})
+    groups.sort(key=lambda g: (-g["days"], -g["frp_max"], -g["detections"]))
+    groups = groups[:40]
+    month = int(state["to"][5:7])
+    recent_months = {}   # months of the last year on record with any fire, per cell
+    years = {}   # years in which each cell had any fire in this calendar month
+    allc = sorted({c for g in groups for c in g["cells"]})
+    if allc:
+        for x, y, yr in db.cursor().execute(f"""
+            SELECT DISTINCT cell_x, cell_y, year(month) FROM monthly
+            JOIN (SELECT unnest(?) AS cell_x, unnest(?) AS cell_y) USING (cell_x, cell_y)
+            WHERE month(month) = ? AND harm > 0""",
+                [[c[0] for c in allc], [c[1] for c in allc], month]).fetchall():
+            years.setdefault((x, y), set()).add(yr)
+        for x, y, mo in db.cursor().execute(f"""
+            SELECT DISTINCT cell_x, cell_y, month FROM monthly
+            JOIN (SELECT unnest(?) AS cell_x, unnest(?) AS cell_y) USING (cell_x, cell_y)
+            WHERE month > CAST(? AS DATE) - INTERVAL 12 MONTH AND harm > 0""",
+                [[c[0] for c in allc], [c[1] for c in allc], LAST]).fetchall():
+            recent_months.setdefault((x, y), set()).add(mo)
+    span = (datetime.date.fromisoformat(state["to"]) - datetime.date.fromisoformat(state["from"])).days + 1
+    base, mname, out = H.BASELINE[1] - H.BASELINE[0] + 1, cal.month_name[month], []
+    for g in groups:
+        burned = set().union(*(years.get(c, set()) for c in g["cells"]))
+        g["years_burned"] = sum(H.BASELINE[0] <= y <= H.BASELINE[1] for y in burned)
+        g["recent_years"] = sum(y > int(LAST[:4]) - 3 for y in burned)   # sources that started after the baseline are not new
+        g["strong"] = g["frp_max"] >= live_state["strong_mw"]
+        g["months_last_year"] = len(set().union(*(recent_months.get(c, set()) for c in g["cells"])))
+        g["permanent"] = g["months_last_year"] >= 6   # burns all year: probably a heat source, not a fire
+        g["score"] = 1.5 * g["days"] + 1.5 * g["strong"] + 2 * (1 - g["years_burned"] / base) * (g["recent_years"] == 0 and not g["permanent"]) + 0.3 * math.log10(g["detections"])
+    for g in sorted(groups, key=lambda g: (g["permanent"], -g["score"]))[:8]:
+        why = [f"Burning {g['days']} of {span} days" if g["days"] > 1 else "Seen on one day"]
+        if g["strong"]:
+            why.append("strong")
+        if g["permanent"]:
+            why.append(f"burned here in {g['months_last_year']} of the last 12 months on record, possibly a permanent heat source")
+        elif g["recent_years"] >= 2:
+            why.append(f"burned here in {mname} in {g['recent_years']} of the last 3 years")
+        elif g["years_burned"] <= 2 and not g["recent_years"]:
+            why.append("new here" if g["years_burned"] == 0 and not g["months_last_year"] else f"rarely burns here in {mname}")
+        out.append({"lon": round(g["lon"], 3), "lat": round(g["lat"], 3), "label": label_for(g["lon"], g["lat"]),
+                    "detections": g["detections"], "harmonized": round(g["harmonized"], 1), "days": g["days"],
+                    "frp_max": round(g["frp_max"], 1), "night": g["night"], "years_burned": g["years_burned"], "recent_years": g["recent_years"], "months_last_year": g["months_last_year"],
+                    "baseline_years": base, "why": ", ".join(why)})
+    return {"from": state["from"], "to": state["to"], "places": out}
+
+
+@app.get("/api/live/places")
+def live_places_get(country: str | None = None, bbox: str | None = None, time: str = "all"):
+    """Where to look first: groups of touching cells with fire in the last 7 days, most urgent first."""
+    return live_places(country, bbox, None, time)
+
+
+@app.post("/api/live/places")
+def live_places_post(body: dict = Body(...)):
+    return live_places(None, None, body.get("polygon"), body.get("time", "all"))
+
+
+@app.get("/api/states")
+def states(bbox: str):
+    """First-level regions (states, provinces) that touch the box, largest first."""
+    if not HAS["states"]:
+        raise HTTPException(404, "reference data missing: run reference.py")
+    w, s_, e, n = parse_bbox(bbox)
+    rows = db.cursor().execute("""SELECT name, country, w, s, e, n, geojson FROM ref_states
+                                  WHERE e >= ? AND w <= ? AND n >= ? AND s <= ? ORDER BY area DESC LIMIT 400""", [w, e, s_, n]).fetchall()
+    return {"states": [{"name": a, "country": b, "bbox": [round(v, 3) for v in (c, d, e_, f)], "geometry": json.loads(g)}
+                       for a, b, c, d, e_, f, g in rows]}
+
+
+@app.get("/api/places")
+def places(bbox: str, limit: int = Query(40, ge=1, le=500)):
+    """Most populous places inside the box."""
+    if not HAS["places"]:
+        raise HTTPException(404, "reference data missing: run reference.py")
+    w, s_, e, n = parse_bbox(bbox)
+    rows = db.cursor().execute(f"""SELECT name, lon, lat, pop FROM ref_places WHERE lon BETWEEN ? AND ? AND lat BETWEEN ? AND ?
+                                   ORDER BY pop DESC LIMIT {limit}""", [w, e, s_, n]).fetchall()
+    return {"places": [{"name": a, "lon": round(b, 3), "lat": round(c, 3), "pop": d} for a, b, c, d in rows]}
+
+
+MAX_CELLS = 60000
+
+
+@app.get("/api/cells")
+def fine_cells(bbox: str, month: str, time: str = "all", normal: int = Query(0, ge=0, le=1)):
+    """0.05 degree cells of the box for one month: [cell_x, cell_y, harmonized, raw(, normal)]."""
+    w, s_, e, n = parse_bbox(bbox)
+    if e - w > 70 or n - s_ > 45:
+        raise HTTPException(422, "Zoom in to see fine detail")
+    day = parse_month(month, "month")
+    if parse_time(time) != "all" and not NIGHT:
+        raise HTTPException(409, "Rebuild the data to use this filter")
+    v = {"all": "harm", "night": "harm_night", "day": "harm - harm_night"}[time]
+    box = "cell_y BETWEEN ? AND ? AND cell_x BETWEEN ? AND ?"   # integer ranges let Parquet skip row groups
+    bp = [math.floor(s_ / H.CELL), math.ceil(n / H.CELL) - 1, math.floor(w / H.CELL), math.ceil(e / H.CELL) - 1]
+    raw = "raw_terra + raw_aqua + raw_n20 + raw_snpp"
+    if normal:
+        a, b = H.BASELINE
+        k = b - a + 1
+        at = lambda p: f"CASE WHEN {p} <= {k} - len(l) THEN 0 ELSE l[{p} - ({k} - len(l))] END"
+        sql = f"""WITH base AS (SELECT cell_x, cell_y, list(({v}) ORDER BY {v}) AS l FROM monthly
+                               WHERE {box} AND month(month) = ? AND year(month) BETWEEN {a} AND {b} GROUP BY 1, 2),
+                       cur AS (SELECT cell_x, cell_y, {v} AS v, {raw} AS raw FROM monthly WHERE {box} AND month = ?)
+                  SELECT cell_x, cell_y, round(coalesce(v, 0), 1), CAST(coalesce(raw, 0) AS BIGINT),
+                         round(({at((k + 1) // 2)} + {at(k // 2 + 1)}) / 2, 1) AS normal
+                  FROM cur FULL JOIN base USING (cell_x, cell_y)
+                  WHERE coalesce(v, 0) > 0 OR coalesce(raw, 0) > 0 OR ({at((k + 1) // 2)} + {at(k // 2 + 1)}) > 0
+                  ORDER BY 3 DESC, 4 DESC LIMIT {MAX_CELLS + 1}"""
+        params = bp + [int(day[5:7])] + bp + [day]
+    else:
+        sql = f"""SELECT cell_x, cell_y, round({v}, 1), CAST({raw} AS BIGINT) FROM monthly
+                  WHERE {box} AND month = ? AND ({v} > 0 OR {raw} > 0) ORDER BY 3 DESC, 4 DESC LIMIT {MAX_CELLS + 1}"""
+        params = bp + [day]
+    rows = db.cursor().execute(sql, params).fetchall()
+    return {"res": H.CELL, "month": month, "time": time, "truncated": len(rows) > MAX_CELLS,
+            "cells": [list(r) for r in rows[:MAX_CELLS]]}
+
+
+@app.get("/api/meta")
+def meta():
+    return {"countries": COUNTRIES, "boxes": BOXES, "first": FIRST[:7], "last": LAST[:7], "primary": PRIMARY,
+            "aqua_start": H.AQUA_START[:7], "model_start": H.MODEL_START[:7], "data": ROOT.name, "live": LIVE_OK, "static_mask": STATIC_FILE.exists(),
+            "night": NIGHT, "states": HAS["states"], "places": HAS["places"]}
+
+
+@app.get("/api/validation")
+def validation():
+    return VAL
+
+
+@app.get("/api/globe.bin")
+def globe_bin():
+    """All 0.5 degree cells and months in one gzip file (see pipeline.pack_globe). The page unpacks it."""
+    path = ROOT / "serve/globe.bin.gz"
+    if not path.exists():   # data built before this file existed
+        import pipeline
+        pipeline.pack_globe(ROOT / "serve")
+    return FileResponse(path, media_type="application/octet-stream", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/globe")
+def globe(month: str = Query(...)):
+    """0.5 degree cells of one month: [west, south, raw hotspots, harmonized]."""
+    cur = db.cursor().execute("SELECT gx * 0.5, gy * 0.5, raw_modis + raw_viirs, round(harm, 1) FROM globe WHERE month = ?",
+                              [parse_month(month, "month")])
+    return {"month": month, "cells": cur.fetchall()}
+
+
+@app.get("/api/globe/years")
+def globe_years():
+    cur = db.cursor().execute("""SELECT year(month), sum(raw_modis), sum(raw_viirs), round(sum(harm)) FROM globe
+                                 GROUP BY 1 ORDER BY 1""")
+    return [{"year": y, "raw_modis": int(m), "raw_viirs": int(v), "harmonized": h} for y, m, v, h in cur.fetchall()]
+
+
+@app.get("/api/hotspots.csv")
+def hotspots_csv(bbox: str, start: str, end: str):
+    """Original FIRMS records inside a box and date range (at most MAX_EXPORT rows)."""
+    w, s, e, n = parse_bbox(bbox)
+    for d in (start, end):
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
+            raise HTTPException(422, "start and end must be YYYY-MM-DD")
+    files = [p.as_posix() for p in (ROOT / "hotspots").glob("*/*.parquet") if start[:4] <= p.stem <= end[:4]]
+    if not files:
+        raise HTTPException(404, "no hotspot files for these years")
+    cur = db.cursor().execute(f"""
+      SELECT round(CAST(latitude AS DOUBLE), 5) AS latitude, round(CAST(longitude AS DOUBLE), 5) AS longitude, acq_date,
+             acq_time, satellite, confidence, round(CAST(frp AS DOUBLE), 2) AS frp, daynight, type, country
+      FROM read_parquet({files}, union_by_name = true)
+      WHERE latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ? AND acq_date BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
+      LIMIT {MAX_EXPORT}""", [s, n, w, e, start, end])
+
+    def stream():
+        out = io.StringIO()
+        w_ = csv.writer(out)
+        w_.writerow([d[0] for d in cur.description])
+        while chunk := cur.fetchmany(20000):
+            w_.writerows(chunk)
+            yield out.getvalue()
+            out.seek(0)
+            out.truncate()
+        yield out.getvalue()
+    return StreamingResponse(stream(), media_type="text/csv",
+                             headers={"Content-Disposition": "attachment; filename=hotspots.csv"})
+
+
+class Static(StaticFiles):
+    """Page files revalidate on every load (ETag, so 304 when unchanged); vendor libraries never change."""
+    async def get_response(self, path, scope):
+        r = await super().get_response(path, scope)
+        r.headers["Cache-Control"] = "public, max-age=86400" if path.replace("\\", "/").startswith("vendor/") else "no-cache"
+        return r
+
+
+app.mount("/", Static(directory=HERE / "static", html=True), name="static")

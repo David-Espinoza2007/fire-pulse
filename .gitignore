@@ -1,4 +1,12 @@
-data/raw/
-data/interim/
+.venv/
+.env
 __pycache__/
-.DS_Store
+.pytest_cache/
+
+# data: only the small Mexico tables and the reference tables are in the repository
+data/*
+!data/mx/
+data/mx/*
+!data/mx/serve/
+!data/reference/
+data/reference/raw/

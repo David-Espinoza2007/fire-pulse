@@ -1,137 +1,129 @@
 # Fire Pulse
 
-A harmonized MODIS + VIIRS burning calendar for anywhere on Earth, 2001 to 2025.
+Where it burns, and whether that is normal. One consistent record of satellite fire detections from
+2000 to today, for any country, state or drawn area, built for a fire manager. Made for the NASA
+Space Apps 2026 challenge "Harmonization of MODIS and VIIRS Hot Spots".
 
-Prototype for the 2026 NASA Space Apps Challenge,
-[Harmonization of MODIS and VIIRS Hot Spots](https://www.spaceappschallenge.org/2026/challenges/modis-and-viirs-hot-spots/).
+This branch replaces the first static prototype (`docs/`, `scripts/` on `main`) with a Python API
+and a new page. The look and the globe come from that prototype.
+
+## Quick start (uses the Mexico data included in the repository)
+
+```bash
+python -m venv .venv
+.venv/Scripts/python -m pip install -r requirements.txt     # macOS/Linux: .venv/bin/python
+.venv/Scripts/python -m uvicorn app:app --port 8000
+```
+
+Open http://localhost:8000. Without world data the app reads `data/mx` (Mexico only), so the
+globe glows only over Mexico. The "last 7 days" layer downloads one public FIRMS file (35 MB) on
+first use. Run the tests with `.venv/Scripts/python -m pytest -q` (22 tests).
+
+Add `?perf=1` to the address to see frame times on the map.
 
 ## The problem
 
-Satellites have logged active-fire hot spots since 2000, but the record is split across two sensors:
-
-- **MODIS** (Terra and Aqua, 1 km pixels) is the long series and is close to retirement.
-- **VIIRS** (Suomi NPP, 375 m pixels) took over in 2012 and detects many small fires MODIS misses.
-
-Put side by side, the raw global counts jump **3.63×** across 2012 for no physical reason. A fire manager
-cannot answer "is this month worse than normal here?" with a record like that.
-
-## What the app does
-
-Pick a country (click the globe or search), type a latitude/longitude box, or draw a box on the globe. You get:
-
-- **A burning calendar**: hot spots per month, every year since 2001, in one comparable unit.
-- **A verdict for the selected month**: how it compares with the historical median for that month, and its rank.
-- **The seasonal curve**: the selected year against the typical year and the middle half of years.
-- **Anomaly view**: the globe and the calendar coloured by how unusual each month is, on a colour-blind-safe ramp.
-- **A sensor check**: converted MODIS against observed VIIRS for the years both flew, for the area you picked.
-- **Harmonized / Raw switch**: see the false 2012 jump, then remove it.
-- **Downloads**: the monthly table as CSV for a chosen range of years, and the calendar as a PNG.
-- **A time slider and Play button** to watch 25 years of fire seasons move across the globe.
-
-## Run it
-
-It is a static site. No build step, no dependencies to install.
-
-```bash
-python3 -m http.server 8765 -d docs
-```
-
-Then open <http://localhost:8765>. The folder is named `docs/` so GitHub Pages can serve it as is
-(Settings → Pages → Deploy from branch → `main` / `docs`).
+MODIS (1 km pixels, since 2000) and VIIRS (375 m pixels, since 2012) both detect fires, but VIIRS
+sees many small fires that MODIS misses. If you add the two records, fire activity seems to jump
+when VIIRS starts: the yearly world count goes from 4.4 million in 2011 to 21.9 million in 2012.
+The jump is the new sensor, not more fire.
 
 ## The method
 
-1. **Same fires only.** Keep detections typed as presumed vegetation fire (drops gas flares, volcanoes and
-   offshore sources). Drop MODIS confidence below 30 % and VIIRS "low" confidence.
-2. **Same grid.** Count hot spots per month in 0.5° cells (about 55 km), kept separate per country.
-3. **Learn the exchange rate.** For the months both sensors observed (Feb 2012 to Dec 2025), compute for every
-   cell how many VIIRS hot spots correspond to one MODIS hot spot:
+The unit is the **adjusted fire detection**: the number of detections Aqua MODIS would have
+reported. Aqua is the reference because it passes at the same local time as VIIRS.
 
-   `k = (ΣVIIRS + λ · k_parent) / (ΣMODIS + λ)`
+1. **Clean.** Keep vegetation fires only (`type = 0`), drop the low-confidence class of each sensor.
+2. **Grid.** One row per 0.05 degree cell, local solar date, day or night, and satellite.
+3. **Conversion tables.** In the years when both sensors flew, look up how many Aqua pixels were in
+   the same cell, date and day/night as each VIIRS row. Average this per class of fire radiative
+   power, pixel count, and day/night, per 5 degree tile, falling back to the 20 degree tile and
+   then to the globe.
+4. **Calibration.** A ratio of sums per region, calendar month and day/night adds the Aqua pixels
+   that had no VIIRS partner and removes the seasonal difference. Day and night are calibrated
+   separately; calibrating them together overstated night fires by about 30 %.
+5. **Series.** Terra scaled to Aqua before August 2002, real Aqua until 2021, converted NOAA-20
+   from 2022 (Aqua's orbit drifts in these years). Days when Aqua did not record are found from
+   the data and filled.
+6. **Also carried:** the night part of the count, and fire radiative power (less certain).
+7. **This week.** The public FIRMS file with the last 7 days of NOAA-20 detections is converted
+   with the same tables. Permanent heat sources are left out: cells the archive labels as
+   industrial, volcanic or offshore, and cells that burn in at least 10 months of a year on at
+   least 30 days with at least 40 % of detections at night (gas flares, smelters).
+8. **Proof.** Each overlap year is hidden in turn, the tables are learned from the other years, and
+   the converted VIIRS is compared with real Aqua.
 
-   The pseudo-count λ shrinks cells with little data toward their country's rate, and countries toward the
-   global rate (4.1×). λ = 30 was picked by hold-out error.
-4. **Convert the past.** Multiply the MODIS-only years by the local rate. Before July 2002 only Terra was
-   flying, so those months use a separate Terra-only rate (12.5× globally).
-5. **From Feb 2012 on, use VIIRS as observed.** Every month is now in VIIRS-equivalent hot spots.
+Results on hidden years, whole world, error per 5 degree tile and month:
 
-## Does it work?
+| Method | NOAA-20, 2018-2021 | Suomi NPP, 2012-2021 |
+|---|---|---|
+| Raw VIIRS counts | 513 % | 513 % |
+| One global factor | 29 % | 28 % |
+| Monthly ratio per region | 17 % | 16 % |
+| Conversion tables (used) | 12 % | 12 % |
 
-**The false jump is gone and the real trend is kept.** Mean of 2013–2025 over mean of 2003–2011, global:
+Two identical VIIRS instruments disagree by 6 % after conversion, so 12 % is close to the limit.
+Fire radiative power: 17 to 18 %.
 
-| Series | Step across 2012 |
-|---|---|
-| Raw (MODIS, then VIIRS) | 3.63× |
-| Harmonized | 0.89× |
-| MODIS alone (flew the whole time) | 0.88× |
-
-**Blind test.** Rates fitted on even years only, used to predict VIIRS in the odd years. Median absolute error:
-
-| Conversion | Country, per year | Country, per month | Cell, per year |
-|---|---|---|---|
-| None (raw MODIS) | 78.0 % | 79.3 % | 76.2 % |
-| One global rate | 21.8 % | 29.4 % | 30.6 % |
-| One rate per country | 8.8 % | 23.3 % | 27.6 % |
-| **One rate per cell (used)** | **8.6 %** | **20.9 %** | **20.5 %** |
-
-These numbers are written to `docs/data/meta.json` on every build and shown in the app under "How it works".
-
-## Data
-
-[NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/) yearly country archives:
-
-- MODIS Collection 6.1 (MCD14ML), 2001–2025
-- VIIRS S-NPP 375 m (VNP14IMGT), 2012–2025
-
-392,307,568 detections read, 333,658,132 kept after the filters, 58,235 grid units in 234 countries and
-territories. The app loads one 9.7 MB file, `docs/data/firepulse.bin.gz`.
-
-## Rebuild the data
-
-Python 3.9+ standard library only.
+## Build the data yourself
 
 ```bash
-python3 scripts/build_data.py --selftest   # checks the harmonization maths on synthetic data
-python3 scripts/build_data.py              # downloads ~6.6 GB of zips into data/raw, then builds
+.venv/Scripts/python pipeline.py --root data/mx --countries Mexico                       # under a minute
+.venv/Scripts/python pipeline.py --root data/world --sensors modis viirs-jpss1 viirs-snpp  # every country
+.venv/Scripts/python reference.py                                                         # states and place names
 ```
 
-Use `--raw /some/big/disk` to keep the zips elsewhere. The build takes about two minutes on a laptop once the
-files are downloaded.
+The pipeline downloads the yearly country archives from NASA FIRMS into `data/zips` (about 10 GB
+for all three sensors; each file holds all countries, so the Mexico build downloads them too). On a
+16 GB laptop the world build takes roughly 40 minutes and needs about 25 GB of free disk for
+temporary files. When `data/world` exists the app uses it instead of `data/mx`. `FIRE_DATA=<folder>`
+picks a data folder explicitly.
 
-## Layout
+Not in the repository (too large): `data/zips`, `data/world`, and the Mexico hotspot archive
+(`data/mx/hotspots`, needed only for "Download detections").
 
-```
-docs/                 the web app (static)
-  index.html, style.css, app.js
-  data/firepulse.bin.gz   harmonized monthly grid, built by the script
-  data/meta.json          build statistics and validation results
-  vendor/                 d3, topojson-client, world-atlas country shapes
-scripts/build_data.py   download → aggregate → harmonize → validate → pack
-```
+## Files
 
-## Limits, and what comes next
+- `harmonize.py` - the method, as DuckDB SQL: grid, conversion tables, calibration, ratios.
+- `pipeline.py` - download, clean, grid, fit, validate, write the tables the app reads, build the
+  mask of permanent heat sources.
+- `reference.py` - downloads Natural Earth states and populated places for the map and place labels.
+- `app.py` - FastAPI. Main endpoints: `/api/calendar` (monthly record for a country, box or
+  polygon, with day/night filter), `/api/cells` (5 km grid for the visible map), `/api/live*`
+  (last 7 days: totals, single detections, "where to look first"), `/api/states`, `/api/places`,
+  `/api/validation`, `/api/hotspots.csv`, `/api/globe.bin`.
+- `static/` - the page: `index.html`, `style.css`, `app.js`, `vendor/` (D3, topojson-client,
+  country shapes). A canvas globe that turns into a flat map when you zoom in.
+- `test_harmonize.py`, `test_api.py` - a synthetic record with a known answer, invariants of the
+  build, and the API on the Mexico data.
+- `SLIDES.md` - draft of the 7 slides. `screenshots/` - pictures for them (older layout).
 
-- A hot spot is a satellite pixel with a thermal anomaly, not one fire. A large fire is many hot spots.
-- One fixed rate per cell cannot follow changes in fire size or season. A season- or size-dependent model is
-  the next step. Single cells with few hot spots are rough.
-- Fires MODIS never saw cannot be recovered by multiplying, so places with only small burns are under-counted
-  before 2012.
-- The Terra-only months (2001 to June 2002) carry the most uncertainty.
-- Sensor outages show up as dips (for example VIIRS in late July and August 2022). Filling them from the other
-  sensor is a natural extension.
-- The record ends in December 2025, the last complete yearly archive. Adding the current year needs the FIRMS
-  near-real-time API and a free MAP_KEY.
-- The CSV download is the monthly table. Single detections for an area are available from the
-  [FIRMS archive download](https://firms.modaps.eosdis.nasa.gov/download/).
-- Areas are countries or latitude/longitude boxes on the 0.5° grid. States and custom polygons are not in yet.
+## Limits
+
+- The monthly record ends in December 2025, the last month in the FIRMS yearly files. The months
+  of 2026 need a FIRMS MAP_KEY and are not included. The last 7 days are shown separately.
+- Counts are not corrected for cloud cover. A cloudy month looks like a quiet month.
+- After 2021 the conversion cannot be checked against Aqua, because Aqua's orbit drifts.
+- Small fires that MODIS never saw before VIIRS cannot be recovered.
+- Values before August 2002 come from Terra, which passes in the morning. They are less certain
+  (about 30 % error), and Terra outages in 2001 and 2002 make some of those months too low.
+- The mask of permanent heat sources is conservative, so some gas flares that burn irregularly
+  still appear in the last 7 days. In the long record, a flare that FIRMS has not classified yet
+  counts as a vegetation fire; this matters for small areas, not for countries.
+- The country files hold detections inside country borders only. A grid cell on a border is
+  counted for the country with most of its detections.
+
+## Data and credits
+
+Active fire data: NASA FIRMS (https://firms.modaps.eosdis.nasa.gov), MODIS Collection 6.1 and
+VIIRS 375 m, standard processing; last 7 days from the FIRMS near-real-time NOAA-20 file. We
+acknowledge the use of data from NASA's Fire Information for Resource Management System (FIRMS),
+part of NASA's Earth Science Data and Information System (ESDIS). Country shapes, states and place
+names: Natural Earth. Libraries: DuckDB, FastAPI, D3, topojson-client. NASA does not endorse this
+project. No NASA logos or insignia are used.
 
 ## Use of AI
 
-The code in this repository (data pipeline and web app) and this README were generated with Claude
-(Anthropic) under the direction of the team, then run and tested against the real FIRMS data. No images,
-video or audio were generated with AI.
-
-## Credits
-
-Fire data: NASA FIRMS (LANCE / EOSDIS). Country shapes: Natural Earth via world-atlas. Charts and globe: D3.
-NASA does not endorse this project. No NASA logos or insignia are used.
+The code in this repository (data pipeline, API and web page) and this README were generated with
+Claude (Anthropic) under the direction of the team, then run and tested against the real FIRMS
+data. No images, video or audio were generated with AI.
