@@ -38,7 +38,7 @@ try {
 }
 $('loading').hidden = true;
 // optional parts of the server; each one switches off quietly when its data or endpoint is missing
-const HAS = {night:meta.night === true, states:meta.states === true, places:meta.places === true, live:!!meta.live};
+const HAS = {night:meta.night === true, states:meta.states === true, places:meta.places === true, live:!!meta.live, trust:meta.trust === true};
 
 /* time: t = 0 is November 2000 */
 const U = G.units, T = G.months, RES = G.res, NCOL = G.ncol, NROW = Math.round(180/RES), Y0 = 2000, M0 = 10;
@@ -123,7 +123,9 @@ const seqLUT = lutOf([C['fire-lo'], C['fire-mid'], C['fire-hi']]);
 const divLUT = lutOf([C.cool, C.neutral, C.warm]);
 const lut = (L, u) => L[clamp(Math.round(u*(LUTN-1)), 0, LUTN-1)];
 const anomU = ratio => clamp((Math.log2(ratio) + 2)/4, 0, 1);       // 1/4x .. 4x across the diverging ramp
-const TRUST = [[0.15,'#fde725','under 15 %'],[0.3,'#5ec962','15 to 30 %'],[0.5,'#21918c','30 to 50 %'],[Infinity,'#3b528b','over 50 %']];
+// error classes, calm teal to bright yellow: lightness rises with the error, so "do not trust" stands out, also for colour-blind readers
+const TRUST = [[0.15,'#2a8296','under 15 %'],[0.3,'#35b88a','15 to 30 %'],[0.5,'#94d34f','30 to 50 %'],[Infinity,'#ffe83a','over 50 %']];
+const NOTEST = '#9aa3b2';   // "too few fires to test" is hatched, not a fifth lightness that could pass for a class
 const PTC = [lut(seqLUT, .4), lut(seqLUT, .72), C['fire-hi']];     // weak, medium, strong detections
 // brightness scale for the globe: the 99.5th percentile of non-empty adjusted cell-months
 const VMAX = (() => { const s = []; for(let i=0;i<Hm.length;i+=53) if(Hm[i]) s.push(Hm[i]); s.sort((a,b) => a-b); return s[Math.floor(s.length*.995)] || 100; })();
@@ -187,8 +189,6 @@ const rowStart = (() => {
 })();
 let qX = new Float32Array(0), qY = new Float32Array(0), qI = new Int32Array(0), nQ = 0, qSide = 0, l1Shown = null;   // level 1 on screen, for hover
 const NB = 12;
-const tiles = SAT.tiles.map(t => ({t, shape:d3.geoGraticule().extentMajor([[t.t20x*20, t.t20y*20], [t.t20x*20 + 20, t.t20y*20 + 20]]).outline(),
-                                   color:TRUST.find(s => t.table < s[0])[1]}));
 function setZoom(z){ zoom = z; const u = clamp((z - 1.5)/1.1, 0, 1); alpha = u*u*(3 - 2*u); projection.scale(S0*zoom); }
 const bump = () => { baseVer++; dirty = true; };   // something on the base map changed
 
@@ -250,7 +250,58 @@ function viewBox(){   // rounded out to whole degrees, so small moves reuse the 
 }
 const fhit = (b, v) => b[0][0] > b[1][0] || (b[0][0] <= v[2] && b[1][0] >= v[0] && b[0][1] <= v[3] && b[1][1] >= v[1]);
 
-/* ---------- base layer: ocean, land and borders, trust tiles, states, selection, place names ---------- */
+/* ---------- confidence map: one unit per deg square from api/trust, loaded in the background ----------
+   Corners are unit vectors shared by neighbours, so every frame projects each corner once and units meet without gaps. */
+let TR = null, trustOff = !HAS.trust;
+const kmOf = deg => Number((deg*111).toPrecision(1));   // 1 degree is about 100 km
+function trustFail(){
+  trustOff = true;
+  const r = document.querySelector('input[name=view][value=trust]'); r.disabled = true;
+  r.parentElement.title = 'Not available: the server has no confidence map yet. Rebuilding the data adds it.';
+  if(state.view === 'trust') setView('count');
+}
+function loadTrust(){
+  if(trustOff) return trustFail();
+  api('api/trust').then(d => {
+    const n = d.ux.length, D = d.deg, NX = Math.round(360/D), key = new Map(), cv = [], ci = new Int32Array(4*n), cls = new Uint8Array(n), at = new Map();
+    const corner = (cx, cy) => {   // -180 and 180 are one corner
+      const k = (cy + 1e4)*NX + ((cx % NX) + NX) % NX; let i = key.get(k);
+      if(i === undefined){ key.set(k, i = key.size); cv.push(...unitOf(cx*D, cy*D)); }
+      return i;
+    };
+    for(let i=0;i<n;i++){
+      const x = d.ux[i], y = d.uy[i];
+      ci[4*i] = corner(x, y); ci[4*i+1] = corner(x + 1, y); ci[4*i+2] = corner(x + 1, y + 1); ci[4*i+3] = corner(x, y + 1);
+      cls[i] = d.n[i] < d.min_n ? 4 : TRUST.findIndex(s => d.err[i] < s[0]);
+      at.set(y*1e4 + x, i);
+    }
+    TR = {...d, N:n, cv:Float32Array.from(cv), ci, cls, at, px:new Float32Array(cv.length/3*2)};
+    bump(); legend(); buildAbout();
+    const sz = d.by_size.filter(s => [20, 5, D].includes(s.deg));
+    $('trustScale').textContent = `Larger areas are more exact. Monthly counts in test years were off by ${sz.map(s => `${pct(s.err)} for about ${fmt(kmOf(s.deg))} km`).join(', ')}.`;
+    $('trustScale').hidden = false;
+  }).catch(err => { console.error(err); trustFail(); });
+}
+// shortcut: a unit is drawn only when all 4 corners are on the near side, so a strip of about 2 degrees at the globe's limb stays plain land
+function drawTrust(g, vb){
+  const R = TR, P = R.px, c = R.cv, q = R.ci, D = R.deg, ps = [0, 1, 2, 3, 4].map(() => new Path2D());
+  for(let j=0, m=c.length/3; j<m; j++){ if(projU(c[3*j], c[3*j+1], c[3*j+2], 300)){ P[2*j] = PX[0]; P[2*j+1] = PX[1]; } else P[2*j] = NaN; }
+  for(let i=0;i<R.N;i++){
+    if(vb){ const lo = R.ux[i]*D, la = R.uy[i]*D; if(la + D < vb[1] || la > vb[3] || lo + D < vb[0] || lo > vb[2]) continue; }
+    const a = 2*q[4*i], b = 2*q[4*i+1], e = 2*q[4*i+2], f = 2*q[4*i+3];
+    if(isNaN(P[a]) || isNaN(P[b]) || isNaN(P[e]) || isNaN(P[f])) continue;
+    const p = ps[R.cls[i]]; p.moveTo(P[a], P[a+1]); p.lineTo(P[b], P[b+1]); p.lineTo(P[e], P[e+1]); p.lineTo(P[f], P[f+1]); p.closePath();
+  }
+  g.globalAlpha = .9;
+  for(let k=0;k<4;k++){ g.fillStyle = TRUST[k][1]; g.fill(ps[k]); }
+  g.fillStyle = g.createPattern(hatchC, 'repeat'); g.fill(ps[4]);
+  g.globalAlpha = 1;
+}
+const hatchC = Object.assign(document.createElement('canvas'), {width:6, height:6});
+{ const h = hatchC.getContext('2d'); h.strokeStyle = NOTEST; h.lineWidth = 1.5; h.beginPath();
+  for(const o of [-6, 0, 6]){ h.moveTo(o, 6); h.lineTo(o + 6, 0); } h.stroke(); }   // "/" lines that tile without seams
+
+/* ---------- base layer: ocean, land and borders, confidence map, states, selection, place names ---------- */
 function drawBase(g, pth, full, under){
   const k = projection.scale(), cx = W/2, cy = H/2, round = 1 - alpha;
   g.setTransform(dpr, 0, 0, dpr, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
@@ -269,13 +320,14 @@ function drawBase(g, pth, full, under){
   const vb = alpha >= 0.5 ? viewBounds(alpha > 0.9 ? 0.1 : 0.3) : null;
   const land = full && alpha >= 0.5 && world50 ? world50.features : feats;
   if(alpha > 0.95) projection.precision(0);   // nearly flat: segments stay straight, and resampling was most of the cost
-  const landPath = () => { g.beginPath(); for(const f of land) if(!vb || fhit(f._b, vb)) pth(f); };
-  landPath(); g.fillStyle = C.land; g.fill(); g.strokeStyle = C['land-line']; g.lineWidth = .6; g.stroke();
+  const landP = new Path2D(), pc = pth.context();   // built once: fill, clip and outline all reuse it
+  pth.context(landP); for(const f of land) if(!vb || fhit(f._b, vb)) pth(f); pth.context(pc);
+  g.fillStyle = C.land; g.fill(landP); g.strokeStyle = C['land-line']; g.lineWidth = .6; g.stroke(landP);
   if(!under){
-    if(state.view === 'trust'){
-      g.globalAlpha = .55;
-      for(const tl of tiles){ g.beginPath(); pth(tl.shape); g.fillStyle = tl.color; g.fill(); }
-      g.globalAlpha = 1; landPath(); g.strokeStyle = C.bg; g.lineWidth = .6; g.stroke();
+    if(state.view === 'trust' && !state.live){
+      // units of coastal cells reach into the sea: land only. The clip is kept for still frames; a moving globe shows a few pixels of spill instead of paying for it every frame
+      if(TR){ if(full){ g.save(); g.clip(landP); } drawTrust(g, vb); if(full) g.restore(); }
+      g.strokeStyle = C.bg; g.lineWidth = .6; g.stroke(landP);
     }
     if(full && alpha > 0.9 && vb && stateMap.size){   // state and province borders of the visible area
       g.beginPath(); for(const s of stateMap.values()) if(hits(s.bbox, vb)) pth(s._ml);
@@ -853,8 +905,10 @@ cv.addEventListener('pointermove', e => {
     return;
   }
   if(state.view === 'trust' && !state.live){
-    const ll = lonLat(x, y), tl = ll && tiles.find(q => q.t.t20x === Math.floor(ll[0]/20) && q.t.t20y === Math.floor(ll[1]/20));
-    if(tl) showTip(`Checked against years held back:\nadjusted numbers off by ${pct(tl.t.table)}\nwithout adjustment off by ${pct(tl.t.raw)}\n${fmt(tl.t.actual)} detections in the test`, e.clientX, e.clientY); else tip.hidden = true;
+    const ll = TR && lonLat(x, y), i = ll ? TR.at.get(Math.floor(ll[1]/TR.deg)*1e4 + Math.floor(ll[0]/TR.deg)) : undefined;
+    if(i === undefined || countryAt(ll[0], ll[1]) < 0){ tip.hidden = true; return; }   // the sea part of a coastal unit is not drawn
+    showTip(TR.cls[i] === 4 ? `Too few fires here to test (${fmt(TR.n[i])} detections in the test years).`
+      : `In test years, the adjusted monthly count for this area (about ${kmOf(TR.deg)} km) was off by ${pct(TR.err[i])}.\nWithout adjustment: ${pct(TR.raw[i])}.\n${fmt(TR.n[i])} detections in the test.`, e.clientX, e.clientY);
     return;
   }
   const ll = isFlat() && stateMap.size ? lonLat(x, y) : null, st = ll && stateAt(ll[0], ll[1]), m = monOf(state.t), yr = yearOf(state.t);
@@ -1318,6 +1372,7 @@ function setMode(harm){
   if(months){ renderStatic(); renderTime(); } legend(); dirty = true; saveHash();
 }
 function setView(view){
+  if(view === 'trust' && trustOff) view = 'count';   // no confidence map on this server
   state.view = view; check('view', view);
   if(months) renderStatic(); legend(); bump(); saveHash();
 }
@@ -1343,13 +1398,15 @@ function loadCells(){
 function setLive(on){
   if(on && !HAS.live) return;
   state.live = on; if(on) state.pick = false;
-  syncTimeControls(); renderTime();
+  syncTimeControls(); renderTime(); bump();   // the confidence map is hidden in the last 7 days
   if(on && !liveCells.has(state.time)) loadCells();
 }
 function legend(){
   const tm = state.live || gTime() !== 'all' ? {all:'', day:'day ', night:'night '}[state.time] : '', sq = [50, 25, 10, 5, 5][fireLevel] || 50;
   $('legend').innerHTML = state.view === 'trust' && !state.live
-    ? 'How far off the adjusted numbers were in test years: ' + TRUST.map(s => `<span class="lstep"><span class="box" style="background:${s[1]}"></span>${s[2]}</span>`).join('')
+    ? !TR ? 'Loading the confidence map…'
+      : `How far off the adjusted monthly count for an area of about ${kmOf(TR.deg)} km was in test years: ` + TRUST.map(s => `<span class="lstep"><span class="box" style="background:${s[1]}"></span>${s[2]}</span>`).join('')
+        + '<span class="lstep"><span class="box hatch"></span>too few fires to test</span>'
     : state.live && fireLevel === 4 ? `Each dot is one ${tm}fire detection in the last 7 days: ` + ['weak', 'medium', 'strong'].map((w, i) => `<span class="lstep"><span class="dotk" style="background:${PTC[i]}"></span>${w}</span>`).join('')
     : state.live ? `<span>Fewer</span><span class="ramp seq"></span><span>More ${tm}fire detections in the last 7 days, per square of about 50 km</span>`
     : state.view === 'anom' ? `<span>Lower than normal</span><span class="ramp div"></span><span>Higher than normal for ${MONTHS[monOf(state.t)]}, per square of about ${sq} km</span>`
@@ -1509,7 +1566,11 @@ function buildAbout(){
   </table>
   <p>The "compared with normal" level is the same as real Aqua's in ${pct(SAT.anomaly_agreement.table)} of tested tile-months, and the same or the next level in ${pct(SAT.anomaly_agreement.table_within_one)}.
   ${VAL.twin ? ` Two identical VIIRS instruments (Suomi NPP and NOAA-20) disagree by ${pct(VAL.twin.overlap)} after adjustment in the overlap years, and by ${pct(VAL.twin.after)} after 2021. No adjustment can beat the first number.` : ''}
-  Choose "Confidence in the numbers" under Show on the map to see the error by region.</p>
+  Choose "Confidence in the numbers" under Show on the map to see the error by place.</p>
+  ${TR ? `<h3>The confidence map</h3>
+  <p>The map splits the land into squares of about ${kmOf(TR.deg)} km. Each square shows how far the adjusted monthly count was from real Aqua in the test years ${TR.years[0]} to ${TR.years[1]}, with ${TR.satellites.map(s => SENSOR[s.toLowerCase()] || s).join(' and ')} tested together. ${TR.left_out.length ? `${TR.left_out.length} months when Aqua did not record are left out. ` : ''}Hatched squares had fewer than ${fmt(TR.min_n)} detections in those years: too few to test.</p>
+  <p>The number depends on the size of the area. In a larger area the errors of small places partly cancel out, so its count is more exact. The same test for squares of other sizes:</p>
+  <table><tr><th>Square of about</th><th>Monthly count off by</th></tr>${TR.by_size.map(s => row(`${fmt(kmOf(s.deg))} km`, [pct(s.err)], s.deg === TR.deg)).join('')}</table>` : ''}
   ${gaps.length ? `<p>Aqua outages found and filled: ${gaps.slice(0, 8).map(([a, b]) => `${a} to ${b}`).join('; ')}${gaps.length > 8 ? `; and ${gaps.length - 8} more` : ''}.</p>` : ''}
   <h3>The last 7 days</h3>
   <p>The FIRMS near-real-time file of ${SENSOR.n20}, adjusted with the same tables. Times are local solar time. A strong fire releases more heat than a set level. "Burning N of 7 days" counts the days with a detection in the same 5 km square. These are first numbers and can change.</p>
@@ -1581,7 +1642,7 @@ addEventListener('hashchange', () => { if(location.hash !== ownHash) restore(); 
 
 $('wLive').hidden = !HAS.live;
 $('strongWrap').hidden = !HAS.live;
-buildAbout(); syncTimeControls(); legend(); loadPB();
+buildAbout(); syncTimeControls(); legend(); loadPB(); loadTrust();
 resize(); setPlaying(false); renderTime();
 requestAnimationFrame(tick);
 if(!(await restore())) select({kind:'world', name:'Earth'}, null).then(() => { spin = !reduced; });

@@ -214,3 +214,25 @@ def test_api_calendar(root, monkeypatch):
     assert len(blob) == pad(4 + struct.unpack("<I", blob[:4])[0]) + 4 * head["units"] + pad(2 * head["units"]) + 3 * pad(2 * head["units"] * 266)
     assert client.get("/api/calendar", params={"bbox": "5,5,1,1"}).status_code == 422
     assert "latitude,longitude" in client.get("/api/hotspots.csv", params={"bbox": "-101,19,-99,21", "start": "2019-01-01", "end": "2019-12-31"}).text
+
+
+def test_trust_file(root):
+    t = json.loads((root / "serve" / "trust.json").read_text())
+    keys = list(zip(t["uy"], t["ux"]))
+    assert len({len(t[k]) for k in ("ux", "uy", "n", "err", "raw")}) == 1 and keys and keys == sorted(keys)
+    assert min(t["n"]) >= t["show_n"] and min(t["err"]) >= 0 and t["satellites"] == ["N20"] and len(t["by_size"]) == len(pipeline.TRUST_SIZES)
+    # one unit again from monthly.parquet in plain Python, window and outage months from validation.json
+    val = json.loads((root / "serve" / "validation.json").read_text())
+    lo, hi = val["satellites"]["N20"]["window"]
+    gaps = {f"{d[:7]}" for a, b in val["aqua_gaps"] for d in (a, b)}   # the fake record has no multi-month outage
+    rows = duckdb.connect().execute(f"""SELECT cell_x, cell_y, strftime(month, '%Y-%m'), raw_aqua, pred_n20 FROM
+        read_parquet('{root.as_posix()}/serve/monthly.parquet') WHERE month >= date_trunc('month', DATE '{lo}') AND month <= DATE '{hi}'""").fetchall()
+    i = max(range(len(t["n"])), key=t["n"].__getitem__)
+    month_sums = {}
+    for x, y, m, a, p in rows:
+        if m not in gaps and x // 20 == t["ux"][i] and y // 20 == t["uy"][i]:
+            s = month_sums.setdefault(m, [0, 0])
+            s[0] += a
+            s[1] += p
+    assert sum(a for a, _ in month_sums.values()) == t["n"][i]
+    assert t["err"][i] == pytest.approx(sum(abs(p - a) for a, p in month_sums.values()) / t["n"][i], abs=5e-4)

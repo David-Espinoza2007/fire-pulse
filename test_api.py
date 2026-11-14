@@ -242,3 +242,12 @@ def test_points_bin(client):
                  and p[2] == (first + __import__("datetime").timedelta(days=cols["day"][k])).isoformat())
         assert p[3] == f"{cols['min'][k] // 60:02d}:{cols['min'][k] % 60:02d}" and p[5] == ("N" if cols["flag"][k] else "D")
         assert p[6] == cols["dburn"][k]
+
+
+def test_trust_endpoint(client):
+    c, _ = client
+    r = c.get("/api/trust")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("application/json") and r.headers["content-encoding"] == "gzip"
+    assert r.headers["cache-control"] == "no-cache" and r.json()["deg"] == 1 and len(r.json()["n"]) == len(r.json()["err"]) > 0
+    assert c.get("/api/trust", headers={"if-none-match": r.headers["etag"]}).status_code == 304
+    assert c.get("/api/meta").json()["trust"] is True

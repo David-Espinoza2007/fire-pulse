@@ -65,12 +65,27 @@ Results on hidden years, whole world, error per 5 degree tile and month:
 Two identical VIIRS instruments disagree by 6 % after conversion, so 12 % is close to the limit.
 Fire radiative power: 17 to 18 %.
 
+The error depends on the size of the area, because errors of single places cancel out in a large
+area. Both VIIRS satellites pooled, hidden years, monthly count of one area:
+
+| Size of the area | 2,200 km | 1,100 km | 550 km | 220 km | 110 km | 55 km |
+|---|---|---|---|---|---|---|
+| Error of the adjusted count | 6 % | 8 % | 11 % | 15 % | 19 % | 25 % |
+
+The map view "Confidence in the numbers" shows this error for every square of 1 degree (about
+100 km), on land. We chose 1 degree for three reasons. It is the smallest area a fire manager
+asks about. NOAA-20 and Suomi NPP, tested separately, give the same map at this size (correlation
+0.90). The map also repeats between odd and even test years (correlation 0.76, 97 % of squares
+within one colour class). Squares with fewer than 200 detections in the test are grey: too few
+fires to test. Months in which Aqua did not record on some days are left out of this test.
+
 ## Build the data yourself
 
 ```bash
 .venv/Scripts/python pipeline.py --root data/mx --countries Mexico                       # under a minute
 .venv/Scripts/python pipeline.py --root data/world --sensors modis viirs-jpss1 viirs-snpp  # every country
 .venv/Scripts/python reference.py                                                         # states and place names
+.venv/Scripts/python pipeline.py --root data/world --trust-only                           # only the confidence map, seconds
 ```
 
 The pipeline downloads the yearly country archives from NASA FIRMS into `data/zips` (about 10 GB
@@ -105,12 +120,13 @@ The last 7 days are different: every detection is drawn at its own position.
 
 - `harmonize.py` - the method, as DuckDB SQL: grid, conversion tables, calibration, ratios.
 - `pipeline.py` - download, clean, grid, fit, validate, write the tables the app reads, build the
-  mask of permanent heat sources.
+  mask of permanent heat sources and the confidence map (`serve/trust.json`).
 - `reference.py` - downloads Natural Earth states and populated places for the map and place labels.
 - `app.py` - FastAPI. Main endpoints: `/api/calendar` (monthly record for a country, box or
   polygon, with day/night filter), `/api/tiles/{level}/{tx}/{ty}` (map tiles with all months),
   `/api/live*` (last 7 days: totals, "where to look first", and `/api/live/points.bin` with every
-  detection of the week), `/api/states`, `/api/places`, `/api/validation`, `/api/hotspots.csv`,
+  detection of the week), `/api/states`, `/api/places`, `/api/validation`, `/api/trust` (test
+  error per square of 1 degree, for the confidence map), `/api/hotspots.csv`,
   `/api/globe.bin` (the 50 km grid for the whole globe).
 - `tiles.py` - builds the map tiles (binary layout in its first lines).
 - `static/` - the page: `index.html`, `style.css`, `app.js`, `vendor/` (D3, topojson-client,

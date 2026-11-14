@@ -348,11 +348,11 @@ def pack_points():
     return gzip.compress(b"".join(parts), 6, mtime=0)
 
 
-def bin_response(request, data, etag):
+def bin_response(request, data, etag, media="application/octet-stream"):
     heads = {"Content-Encoding": "gzip", "Cache-Control": "no-cache", "ETag": etag}
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=heads)
-    return Response(data, media_type="application/octet-stream", headers=heads)
+    return Response(data, media_type=media, headers=heads)
 
 
 @app.get("/api/live/points.bin")
@@ -364,6 +364,23 @@ def live_points_bin(request: Request):
             live_state["bin"] = pack_points()
         data = live_state["bin"]
     return bin_response(request, data, f'"live-{live_state["loaded"]:.0f}-{len(data)}"')
+
+
+TRUST_FILE, trust_state = ROOT / "serve/trust.json", {"mtime": None}
+
+
+@app.get("/api/trust")
+def trust(request: Request):
+    """serve/trust.json (see pipeline.trust_cells), gzipped once and kept until the file changes."""
+    try:
+        st = TRUST_FILE.stat()
+    except FileNotFoundError:
+        raise HTTPException(404, "no trust.json: run python pipeline.py --root <data> --trust-only")
+    with live_lock:
+        if trust_state["mtime"] != st.st_mtime_ns:
+            trust_state.update(mtime=st.st_mtime_ns, data=gzip.compress(TRUST_FILE.read_bytes(), 6, mtime=0))
+        data = trust_state["data"]
+    return bin_response(request, data, f'"{st.st_mtime_ns:x}-{len(data):x}"', "application/json")
 
 
 @app.get("/api/tiles/{level}/{tx}/{ty}")
@@ -565,7 +582,7 @@ def fine_cells(bbox: str, month: str, time: str = "all", normal: int = Query(0, 
 def meta():
     return {"countries": COUNTRIES, "boxes": BOXES, "first": FIRST[:7], "last": LAST[:7], "primary": PRIMARY,
             "aqua_start": H.AQUA_START[:7], "model_start": H.MODEL_START[:7], "data": ROOT.name, "live": LIVE_OK, "static_mask": STATIC_FILE.exists(),
-            "night": NIGHT, "states": HAS["states"], "places": HAS["places"]}
+            "trust": TRUST_FILE.exists(), "night": NIGHT, "states": HAS["states"], "places": HAS["places"]}
 
 
 @app.get("/api/validation")

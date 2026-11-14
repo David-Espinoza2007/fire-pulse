@@ -2,6 +2,7 @@
 
     python pipeline.py --root data/mx --countries Mexico     # quick first pass
     python pipeline.py --root data/world                     # every country
+    python pipeline.py --root data/world --trust-only        # only serve/trust.json, from the tables already built
 
 Steps are resumable: a year that already has its Parquet file is skipped.
 """
@@ -141,8 +142,6 @@ def validate(con, sat, window):
         "overall": {**rows(con, f"SELECT {cols} FROM val")[0], **rows(con, f"SELECT {dn} FROM val_dn")[0]},
         "folds": [{**r, **folds.get(r["year"], {})}
                   for r in rows(con, f"SELECT year(month) AS year, {cols} FROM val GROUP BY 1 HAVING sum(actual) > 0 ORDER BY 1")],
-        "tiles": rows(con, f"""SELECT CAST(floor(t5x / 4.0) AS INT) AS t20x, CAST(floor(t5y / 4.0) AS INT) AS t20y, {cols}
-                               FROM val GROUP BY 1, 2 HAVING sum(actual) > 0"""),
         "anomaly_agreement": rows(con, f"""SELECT {same('et')} AS "table", {same('et', 1)} AS table_within_one,
                                                   {same('er')} AS ratio, count(*) AS months
           FROM val JOIN base5 b ON b.t5x = val.t5x AND b.t5y = val.t5y AND b.m = month(val.month) WHERE b.q[3] >= 5""")[0],
@@ -215,6 +214,48 @@ def static_cells(root):
     con.close()
     shutil.rmtree(root / "tmp_duck", ignore_errors=True)
     print("static cells", dict(n), flush=True)
+
+
+TRUST_DEG, TRUST_MIN_N, TRUST_SHOW_N = 1, 200, 20   # unit size in degrees; fires needed to trust a unit; fires needed to show it
+TRUST_SIZES = (20, 10, 5, 2, 1, 0.5)                 # unit sizes for by_size: the error grows as the area shrinks
+
+
+def trust_cells(root):
+    """serve/trust.json: held-out error of the adjusted count per unit of TRUST_DEG degrees, tests of all VIIRS satellites pooled.
+    Months that hold an Aqua outage day are left out (Aqua is the truth there). Needs serve/monthly.parquet and validation.json."""
+    serve = root / "serve"
+    val = json.loads((serve / "validation.json").read_text())
+    sats = {s: v["window"] for s, v in val["satellites"].items()}
+    gaps = set()
+    for a, b in val["aqua_gaps"]:
+        y, m = int(a[:4]), int(a[5:7])
+        while (y, m) <= (int(b[:4]), int(b[5:7])):
+            gaps.add(f"{y}-{m:02d}")
+            y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    con = connect(root)
+    con.execute(f"CREATE TEMP VIEW m AS SELECT * FROM read_parquet('{(serve / 'monthly.parquet').as_posix()}')")
+    inside = lambda w: f"month >= date_trunc('month', DATE '{w[0]}') AND month <= DATE '{w[1]}' AND strftime(month, '%Y-%m') NOT IN {tuple(gaps) + ('',)}"
+    con.execute("CREATE TEMP TABLE t AS " + " UNION ALL ".join(
+        f"SELECT cell_x, cell_y, month, '{s}' AS sat, raw_aqua AS a, pred_{s.lower()} AS p, raw_{s.lower()} AS r FROM m WHERE {inside(w)}"
+        for s, w in sats.items()))
+    # totals per unit, month and satellite first: the error is of the monthly count of an area of that size
+    um = lambda deg: (f"SELECT CAST(floor(cell_x / {deg * 20}) AS INT) AS ux, CAST(floor(cell_y / {deg * 20}) AS INT) AS uy, "
+                      f"sum(a) AS a, sum(p) AS p, sum(r) AS r FROM t GROUP BY ux, uy, month, sat")
+    cols = con.execute(f"""SELECT ux, uy, CAST(sum(a) AS BIGINT), sum(abs(p - a)) / sum(a), sum(abs(r - a)) / sum(a)
+                           FROM ({um(TRUST_DEG)}) GROUP BY ux, uy HAVING sum(a) >= {TRUST_SHOW_N} ORDER BY uy, ux""").fetchall()
+    by_size = [{"deg": d, "km": round(d * 111), "err": round(con.execute(f"SELECT sum(abs(p - a)) / sum(a) FROM ({um(d)})").fetchone()[0], 3)}
+               for d in TRUST_SIZES]
+    years = con.execute("SELECT min(year(month)), max(year(month)) FROM t").fetchone()
+    ux, uy, n, err, raw = (list(c) for c in zip(*cols))
+    out = {"deg": TRUST_DEG, "min_n": TRUST_MIN_N, "show_n": TRUST_SHOW_N, "satellites": list(sats), "years": list(years),
+           "left_out": sorted(g for g in gaps if any(w[0][:7] <= g <= w[1][:7] for w in sats.values())),
+           "ux": ux, "uy": uy, "n": n, "err": [round(x, 3) for x in err], "raw": [round(x, 2) for x in raw], "by_size": by_size}
+    part = serve / "trust.json.part"
+    part.write_text(json.dumps(out, separators=(",", ":")))
+    os.replace(part, serve / "trust.json")
+    con.close()
+    shutil.rmtree(root / "tmp_duck", ignore_errors=True)
+    print("trust units", len(n), "with n >=", TRUST_MIN_N, sum(x >= TRUST_MIN_N for x in n), by_size, flush=True)
 
 
 def build(root, sensors=tuple(SENSORS)):
@@ -343,6 +384,7 @@ def build(root, sensors=tuple(SENSORS)):
     con.close()
     pack_globe(serve)
     static_cells(root)
+    trust_cells(root)
     db.unlink()
     shutil.rmtree(root / "tmp_duck", ignore_errors=True)
     print("built", serve, flush=True)
@@ -355,7 +397,10 @@ if __name__ == "__main__":
     ap.add_argument("--countries", help="comma-separated country names as in the FIRMS file names; default all")
     ap.add_argument("--sensors", nargs="+", default=["modis", "viirs-jpss1"], choices=list(SENSORS))
     ap.add_argument("--delete-zips", action="store_true", help="delete each zip after its Parquet file is written")
+    ap.add_argument("--trust-only", action="store_true", help="only write serve/trust.json (no download, no build)")
     args = ap.parse_args()
+    if args.trust_only:
+        raise SystemExit(trust_cells(args.root))
     wanted = {c.strip().lower() for c in args.countries.split(",")} if args.countries else None
     for sensor in args.sensors:
         for year in YEARS[sensor]:
