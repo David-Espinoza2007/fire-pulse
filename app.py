@@ -60,15 +60,12 @@ HAS = {t: (REF / f"{t}.parquet").exists() for t in ("states", "places")}
 RAW = ("raw_terra", "raw_aqua", "raw_n20", "raw_snpp", "pred_n20", "pred_snpp", "fill")
 MAX_EXPORT = 500_000
 
-# Live layer: the public FIRMS file with the last 7 days of NOAA-20 detections (no key needed),
-# converted with the tables the pipeline saved. Near-real-time data, so the result is provisional.
+# Live layer: the public FIRMS file with the last 7 days of NOAA-20 detections (no key needed).
+# NOAA-20 is a VIIRS instrument, so its counts are already in the unit of the record: nothing is converted.
+# Near-real-time data, so the result is provisional.
 LIVE_URL = "https://firms.modaps.eosdis.nasa.gov/data/active_fire/noaa-20-viirs-c2/csv/J1_VIIRS_C2_Global_7d.csv"
-# every model table must be there: data built before a table was added must not stop the server
-LIVE_OK = (PRIMARY == "N20" and (ROOT / "serve/cell_country.parquet").exists()
-           and all((ROOT / "serve/model" / f"{t}.parquet").exists() for t in H.MODEL_TABLES))
+LIVE_OK = (ROOT / "serve/cell_country.parquet").exists()
 if LIVE_OK:
-    for t in H.MODEL_TABLES:
-        db.execute(f"CREATE VIEW m_{t} AS SELECT * FROM read_parquet('{(ROOT / 'serve/model').as_posix()}/{t}.parquet')")
     db.execute(f"CREATE VIEW cell_country AS SELECT * FROM read_parquet('{(ROOT / 'serve').as_posix()}/cell_country.parquet')")
 LIVE_FILE = ROOT / "live.csv"
 STATIC_FILE = ROOT / "serve/static.parquet"   # from pipeline.static_cells; absent on data built before it existed
@@ -80,9 +77,9 @@ live_lock, live_state = threading.Lock(), {"loaded": 0.0}
 
 
 def load_live():
-    """Download (at most once per hour) and convert the last 7 days. -> {"from": date, "to": date}"""
+    """Download (at most once per hour) and grid the last 7 days. -> {"from": date, "to": date}"""
     if not LIVE_OK:
-        raise HTTPException(404, "live layer needs the saved conversion tables for NOAA-20")
+        raise HTTPException(404, "live layer needs serve/cell_country.parquet: rebuild the data")
     with live_lock:
         if time.time() - live_state["loaded"] > 3600:
             path = LIVE_FILE
@@ -105,7 +102,7 @@ def load_live():
             src = "(SELECT * EXCLUDE (cx, cy, gone) FROM live_raw WHERE NOT gone)"
             cur.execute(f"CREATE OR REPLACE TABLE live_cp AS {H.cell_pass_sql(src, 'N20')}")
             cur.execute(f"""CREATE OR REPLACE TABLE live AS
-                            SELECT cell_x, cell_y, daynight, n_pixels, est_table AS harm FROM ({H.apply('m', 'live_cp', 'TRUE')})""")
+                            SELECT cell_x, cell_y, daynight, n_pixels, n_pixels AS harm FROM live_cp""")
             # one row per detection, cleaned like H.CLEAN; local solar time = UTC + longitude / 15 hours
             cur.execute(f"""CREATE OR REPLACE TABLE live_det AS
               SELECT d.*, y.days FROM (
@@ -237,8 +234,8 @@ def calendar(country, bbox, polygon, start, end, method, fmt, time="all"):
     months = []
     for rec in (dict(zip(names, row)) for row in cur.fetchall()):
         iso = rec["month"].isoformat()
-        source = "terra_scaled" if iso < H.AQUA_START else "aqua" if iso < H.MODEL_START else f"{PRIMARY.lower()}_model"
-        table = {"terra_scaled": VAL["terra"]["range"], "aqua": []}.get(source, VAL["satellites"][PRIMARY]["range"])
+        source = "terra_model" if iso < H.AQUA_START else "aqua_model" if iso < VAL["viirs_start"] else "viirs"   # viirs: as measured, no range
+        table = {"terra_model": VAL["terra"]["range"], "aqua_model": VAL["satellites"][PRIMARY]["range"]}.get(source, [])
         low, high = bounds(rec["v"], table)
         months.append({"month": iso[:7], "harmonized": round(rec["v"], 1), "low": round(low, 1), "high": round(high, 1),
                        "median": round(rec["median"], 1), "anomaly": rec["anomaly"], "rank": rec["rank"], "source": source,
@@ -287,7 +284,7 @@ def live(country, bbox, polygon, time="all"):
 
 @app.get("/api/live")
 def live_get(country: str | None = None, bbox: str | None = None, time: str = "all"):
-    """Last 7 days in the selected area: raw detections and MODIS-equivalent hotspots."""
+    """Last 7 days in the selected area. VIIRS is the unit of the record, so harmonized equals raw here."""
     return live(country, bbox, None, time)
 
 
@@ -564,7 +561,7 @@ def fine_cells(bbox: str, month: str, time: str = "all", normal: int = Query(0, 
 @app.get("/api/meta")
 def meta():
     return {"countries": COUNTRIES, "boxes": BOXES, "first": FIRST[:7], "last": LAST[:7], "primary": PRIMARY,
-            "aqua_start": H.AQUA_START[:7], "model_start": H.MODEL_START[:7], "data": ROOT.name, "live": LIVE_OK, "static_mask": STATIC_FILE.exists(),
+            "aqua_start": H.AQUA_START[:7], "viirs_start": VAL["viirs_start"][:7], "data": ROOT.name, "live": LIVE_OK, "static_mask": STATIC_FILE.exists(),
             "night": NIGHT, "states": HAS["states"], "places": HAS["places"]}
 
 

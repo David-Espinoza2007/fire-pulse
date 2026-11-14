@@ -1,5 +1,5 @@
 /* Fire Pulse. The look and the globe come from the team's first prototype (fire-pulse). The numbers come
-   from the API in app.py: fire detections adjusted to what Aqua MODIS would have reported, with tables tested on held-out years.
+   from the API in app.py: fire detections adjusted to what a VIIRS instrument would have reported, with tables tested on held-out years.
    No build step: plain script, d3 + topojson from ./vendor. */
 (async function(){
 const $ = id => document.getElementById(id);
@@ -46,7 +46,7 @@ const yearOf = t => Y0 + ((t + M0)/12 | 0), monOf = t => (t + M0) % 12, tOf = (y
 const tAt = ym => tOf(+ym.slice(0,4), +ym.slice(5,7) - 1);
 const ymOf = t => `${yearOf(t)}-${String(monOf(t) + 1).padStart(2, '0')}`;
 const firstOf = mo => ((mo - M0) % 12 + 12) % 12;   // first t of a calendar month
-const YEARS = d3.range(Y0, yearOf(T-1) + 1), AQUA = tAt(meta.aqua_start), MODEL = tAt(meta.model_start);
+const YEARS = d3.range(Y0, yearOf(T-1) + 1), AQUA = tAt(meta.aqua_start), VSTART = tAt(meta.viirs_start);
 const PRIMARY = VAL.primary, PKEY = PRIMARY.toLowerCase(), SAT = VAL.satellites[PRIMARY];
 const SENSOR = {terra:'MODIS Terra', aqua:'MODIS Aqua', n20:'VIIRS NOAA-20', snpp:'VIIRS Suomi NPP'};
 const PLAIN = {terra:'Older satellite', aqua:'Reference satellite', snpp:'Newer satellite (first)', n20:'Newer satellite (second)'};
@@ -129,7 +129,7 @@ const PTC = [lut(seqLUT, .4), lut(seqLUT, .72), C['fire-hi']];     // weak, medi
 const VMAX = (() => { const s = []; for(let i=0;i<Hm.length;i+=53) if(Hm[i]) s.push(Hm[i]); s.sort((a,b) => a-b); return s[Math.floor(s.length*.995)] || 100; })();
 
 /* ---------- state ---------- */
-const state = {t:T-1, harm:true, view:'count', cal:'grid', live:false, ghost:false, time:'all', strong:false, pick:false, sel:{kind:'world', name:'Earth', id:0}};
+const state = {t:T-1, harm:true, view:'count', cal:'grid', live:false, time:'all', strong:false, pick:false, sel:{kind:'world', name:'Earth', id:0}};
 let months = null, S = null, liveArea = null, lookList = null, lookAll = false, lookFrom = null, lastSeason = null, lastTiles = [];
 const liveCells = new Map();
 let viewPlaces = null, curVB = null, viewKey = '', wasFlat = false, statesOff = false, placesOff = false;
@@ -188,7 +188,7 @@ const rowStart = (() => {
 let qX = new Float32Array(0), qY = new Float32Array(0), qI = new Int32Array(0), nQ = 0, qSide = 0, l1Shown = null;   // level 1 on screen, for hover
 const NB = 12;
 const tiles = SAT.tiles.map(t => ({t, shape:d3.geoGraticule().extentMajor([[t.t20x*20, t.t20y*20], [t.t20x*20 + 20, t.t20y*20 + 20]]).outline(),
-                                   color:TRUST.find(s => t.table < s[0])[1]}));
+                                   color:TRUST.find(s => t[VAL.method] < s[0])[1]}));
 function setZoom(z){ zoom = z; const u = clamp((z - 1.5)/1.1, 0, 1); alpha = u*u*(3 - 2*u); projection.scale(S0*zoom); }
 const bump = () => { baseVer++; dirty = true; };   // something on the base map changed
 
@@ -854,7 +854,7 @@ cv.addEventListener('pointermove', e => {
   }
   if(state.view === 'trust' && !state.live){
     const ll = lonLat(x, y), tl = ll && tiles.find(q => q.t.t20x === Math.floor(ll[0]/20) && q.t.t20y === Math.floor(ll[1]/20));
-    if(tl) showTip(`Checked against years held back:\nadjusted numbers off by ${pct(tl.t.table)}\nwithout adjustment off by ${pct(tl.t.raw)}\n${fmt(tl.t.actual)} detections in the test`, e.clientX, e.clientY); else tip.hidden = true;
+    if(tl) showTip(`Checked against years held back:\nadjusted numbers off by ${pct(tl.t[VAL.method])}\nwithout adjustment off by ${pct(tl.t.raw)}\n${fmt(tl.t.actual)} detections in the test`, e.clientX, e.clientY); else tip.hidden = true;
     return;
   }
   const ll = isFlat() && stateMap.size ? lonLat(x, y) : null, st = ll && stateAt(ll[0], ll[1]), m = monOf(state.t), yr = yearOf(state.t);
@@ -1043,7 +1043,7 @@ function ratioText(r, noun){   // never "0.9x": times when clearly more, percent
   return `${Math.round(100*(1 - r))} % below normal for ${noun}`;
 }
 const unitWord = () => state.harm ? 'adjusted detections' : 'detections as reported';
-const srcWord = x => ({terra_scaled:'Counted by the older satellite (less certain)', aqua:'Counted by the reference satellite'})[x.source] || 'Counted by the newer satellites, adjusted so all years compare';
+const srcWord = x => ({terra_model:'Estimated from the oldest satellite (less certain)', aqua_model:'Estimated from the older satellite, adjusted so all years compare'})[x.source] || 'Counted by the reference satellites, as measured';
 
 /* ---------- answer ---------- */
 const cal = $('cal'), Wv = 360, L = 38, Rm = 10, Tp = 8, B = 20, iw = Wv - L - Rm, sfmt = d3.format('~s');
@@ -1052,9 +1052,9 @@ for(const id of ['yFrom','yTo','pYear']) for(const y of YEARS) $(id).add(new Opt
 MONTHS.forEach((m, i) => $('pMonth').add(new Option(m, i)));
 $('yFrom').value = YEARS[0]; $('yTo').value = YEARS.at(-1);
 $('tRange').max = T - 1;
-$('eras').innerHTML = `<span class="era e0" style="flex:${AQUA}" data-tip="Before August 2002 only an older satellite flew. Its counts are scaled to the reference satellite. Less certain.">Older satellite (less certain)</span>`
-  + `<span class="era e1" style="flex:${MODEL - AQUA}" data-tip="The reference satellite, as measured. Every other year is adjusted to it.">Reference satellite</span>`
-  + `<span class="era e2" style="flex:${T - MODEL}" data-tip="From 2022 the newer satellites carry the record. Their detections are adjusted to what the reference satellite would have seen.">Newer satellite (adjusted)</span>`;
+$('eras').innerHTML = `<span class="era e0" style="flex:${AQUA}" data-tip="Before August 2002 only the oldest satellite (Terra) flew, in the morning. Its counts are adjusted to the reference. Less certain.">Oldest satellite (less certain)</span>`
+  + `<span class="era e1" style="flex:${VSTART - AQUA}" data-tip="The older satellite (Aqua MODIS). Its counts are adjusted to what the reference satellites would have seen, small fires included.">Older satellite (adjusted)</span>`
+  + `<span class="era e2" style="flex:${T - VSTART}" data-tip="The reference satellites (VIIRS), as measured. They carry the record on after MODIS.">Reference satellites (measured)</span>`;
 const yearRange = () => { const a = +$('yFrom').value, b = +$('yTo').value; return [Math.min(a, b), Math.max(a, b)]; };
 const tipOf = t => { const m = months[t]; let s = `${MON[monOf(t)]} ${yearOf(t)}: ${fmt(S[t])} ${unitWord()}`;
   if(state.harm && m.low !== m.high) s += `\nlikely ${fmt(m.low)} to ${fmt(m.high)}`;
@@ -1095,7 +1095,7 @@ function renderCalendar(){
   }
   let h = '<div class="cal-row head"><span></span>' + MON.map(m => `<span>${m[0]}</span>`).join('') + '<span>Year</span></div>';
   YEARS.forEach((y, i) => {
-    if(state.harm && y === yearOf(MODEL)) h += `<div class="era-mark">${y}: the newer satellites take over, adjusted so all years compare</div>`;
+    if(state.harm && y === yearOf(VSTART)) h += `<div class="era-mark">${y}: the reference satellites start. Earlier years are adjusted to them</div>`;
     if(!state.harm && firstViirs >= 0 && y === yearOf(firstViirs)) h += `<div class="era-mark">${y}: a newer satellite starts and sees more small fires</div>`;
     h += `<div class="cal-row${y < a || y > b ? ' out' : ''}"><span class="cal-y">${y}</span>`;
     for(let m=0;m<12;m++){ const t = tOf(y, m);
@@ -1126,8 +1126,8 @@ function renderTime(){
   const t = state.t;
   $('readout').textContent = state.live ? 'Last 7 days' : `${MONTHS[monOf(t)]} ${yearOf(t)}`;
   $('tRange').value = t;
-  $('sensorNow').textContent = state.live ? 'Newer satellite, first numbers' + (state.harm ? ', adjusted' : ', as reported')
-    : state.harm ? (t < AQUA ? 'Older satellite (less certain)' : t < MODEL ? 'Reference satellite' : 'Newer satellite (adjusted)')
+  $('sensorNow').textContent = state.live ? 'Reference satellite, first numbers'
+    : state.harm ? (t < AQUA ? 'Oldest satellite, adjusted (less certain)' : t < VSTART ? 'Older satellite, adjusted' : 'Reference satellites, as measured')
     : 'Counts as reported' + (months && months[t].raw.n20 + months[t].raw.snpp > 0 ? ', newer satellites included' : '');
   syncWhen(); legend(); dirty = true;
   if(!months) return;
@@ -1166,7 +1166,7 @@ function renderAnswer(){
   } else {
     const n = months.filter((_, i) => monOf(i) === m).length;
     const src = `${tm}${srcWord(x)}${x.low !== x.high ? `. Likely ${fmt(x.low)} to ${fmt(x.high)}` : ''}. ${fmt(cur)} ${unitWord()}, ${ordinal(x.rank)} highest of ${n} ${MONTHS[m]}s on record.`
-      + (x.filled >= 1 ? ` Includes ${fmt(x.filled)} for days when the reference satellite did not record.` : '');
+      + (x.filled >= 1 ? ` Includes ${fmt(x.filled)} for days when the older satellite did not record.` : '');
     if(x.anomaly === 'insufficient' && cur < 5) setStatus('●', 'flat', 'Off season', `Hardly any fire in a normal ${MONTHS[m]} here.`, src);
     else if(x.anomaly === 'insufficient') setStatus('▲', 'up', 'Higher than normal', `${fmt(cur)} fire detections in a month that is usually quiet here.`, src);
     else { const L = LEVEL[x.anomaly] || ['●', 'flat', 'Normal']; setStatus(L[0], L[1], L[2], ratioText(cur/Math.max(x.median, 1), MONTHS[m]) + '.', src); }
@@ -1244,24 +1244,12 @@ function renderSeason(sm){
   $('keyYear').textContent = `This season (${fy})`;
 }
 
-// "Small fires": newer-satellite detections per adjusted detection, per calendar month, learned in the years of the newer
-// satellite and applied to every year. The spread of the yearly factors gives the range.
-function ghostModel(){
-  const key = months.some(m => m.raw.snpp) ? 'snpp' : 'n20', seen = months.map((m, t) => [m, t]).filter(([m]) => m.raw[key] > 0 && m.harmonized > 0);
-  const sum = (a, f) => d3.sum(a, f), hs = a => sum(a, ([m]) => m.harmonized);
-  if(hs(seen) < 200) return null;
-  const all = sum(seen, ([m]) => m.raw[key])/hs(seen), k = d3.rollup(seen, v => sum(v, ([m]) => m.raw[key])/hs(v), ([, t]) => monOf(t));
-  const yearly = d3.rollups(seen, v => v.length >= 6 ? sum(v, ([m]) => m.raw[key])/hs(v)/all : NaN, ([, t]) => yearOf(t)).map(d => d[1]).filter(isFinite);
-  return {k, all, lo:d3.min(yearly) ?? 1, hi:d3.max(yearly) ?? 1};
-}
 function renderYears(){
   const Hv = 140, ih = Hv - Tp - B, [a, b] = yearRange(), ys = YEARS.filter(y => y >= a && y <= b), harm = state.harm;
-  const gm = state.ghost && harm ? ghostModel() : null;
   const rows = ys.map(y => { const ts = d3.range(12).map(m => tOf(y, m)).filter(t => t >= 0 && t < T), ms = ts.map(t => months[t]);
     return {y, n:ms.length, harm:d3.sum(ms, m => m.harmonized), low:d3.sum(ms, m => m.low), high:d3.sum(ms, m => m.high), src:ms.at(-1).source,
-            raw:Object.fromEntries(Object.keys(SENSOR).map(k => [k, d3.sum(ms, m => m.raw[k])])),
-            ghost:gm ? d3.sum(ts, t => months[t].harmonized*(gm.k.get(monOf(t)) ?? gm.all)) : 0}; });
-  const top = d3.max(rows, r => harm ? Math.max(r.high, r.ghost*(gm ? gm.hi : 1)) : d3.sum(Object.values(r.raw))) || 1;
+            raw:Object.fromEntries(Object.keys(SENSOR).map(k => [k, d3.sum(ms, m => m.raw[k])]))}; });
+  const top = d3.max(rows, r => harm ? r.high : d3.sum(Object.values(r.raw))) || 1;
   const sc = d3.scaleLinear().domain([0, top]).nice(3).range([Tp + ih, Tp]), bw = iw/rows.length, x = i => L + i*bw;
   let h = `<svg viewBox="0 0 ${Wv} ${Hv}" role="img" aria-label="Fire detections per year">`;
   sc.ticks(3).forEach(v => { h += `<line class="grid" x1="${L}" x2="${Wv-Rm}" y1="${sc(v)}" y2="${sc(v)}"/><text class="axis" x="${L-6}" y="${sc(v)+4}" text-anchor="end">${sfmt(v)}</text>`; });
@@ -1270,8 +1258,7 @@ function renderYears(){
     const rect = (cls, v0, v1, tipText) => `<rect class="${cls}" x="${x(i) + 1}" width="${Math.max(1, bw - 2)}" y="${sc(v1)}" height="${Math.max(0, sc(v0) - sc(v1))}" data-tip="${tipText}"/>`;
     if(harm){
       const part = r.n < 12 ? ` (${r.n} months)` : '';
-      if(gm && r.ghost > r.harm) h += rect('bar-ghost', r.harm, r.ghost, `${r.y}: with small fires, about ${fmt(r.ghost)} detections&#10;likely ${fmt(r.ghost*gm.lo)} to ${fmt(r.ghost*gm.hi)}. Estimate only.`);
-      h += rect(r.src === 'aqua' ? 'bar-aqua' : r.src === 'terra_scaled' ? 'bar-terra' : 'bar-viirs', 0, r.harm, `${r.y}${part}: ${fmt(r.harm)} adjusted detections` + (r.high > r.low ? `&#10;likely ${fmt(r.low)} to ${fmt(r.high)}` : ''));
+      h += rect(r.src === 'aqua_model' ? 'bar-aqua' : r.src === 'terra_model' ? 'bar-terra' : 'bar-viirs', 0, r.harm, `${r.y}${part}: ${fmt(r.harm)} adjusted detections` + (r.high > r.low ? `&#10;likely ${fmt(r.low)} to ${fmt(r.high)}` : ''));
       if(r.high > r.low) h += `<line class="whisk" x1="${x(i) + bw/2}" x2="${x(i) + bw/2}" y1="${sc(r.low)}" y2="${sc(r.high)}"/>`;
     } else { let base = 0; const all = Object.keys(SENSOR).filter(k => r.raw[k]).map(k => `${PLAIN[k]}: ${fmt(r.raw[k])}`).join('&#10;');
       for(const k of Object.keys(SENSOR)){ if(!r.raw[k]) continue; h += rect('bar-' + k, base, base + r.raw[k], `${r.y}&#10;${all}`); base += r.raw[k]; } }
@@ -1279,29 +1266,26 @@ function renderYears(){
   $('years').innerHTML = h + '</svg>';
   const sq = (c, tx) => `<span><span class="sq" style="background:${c}"></span>${tx}</span>`;
   $('yearsUnit').textContent = harm ? 'adjusted detections' : 'as reported, all satellites';
-  $('yearsKey').innerHTML = harm ? sq(C.cool, 'Older satellite (less certain)') + sq(C.accent, 'Reference satellite') + sq(C['fire-mid'], 'Newer satellite (adjusted)') + '<span>White line: likely range</span>'
+  $('yearsKey').innerHTML = harm ? sq(C.cool, 'Oldest satellite (less certain)') + sq(C.accent, 'Older satellite (adjusted)') + sq(C['fire-mid'], 'Reference satellites (measured)') + '<span>White line: likely range</span>'
     : sq(C.cool, PLAIN.terra) + sq(C.accent, PLAIN.aqua) + sq('#c9662b', PLAIN.snpp) + sq(C['fire-mid'], PLAIN.n20) + '<span>The jump is the new satellite, not more fire.</span>';
-  $('ghostNote').hidden = !state.ghost;
-  $('ghostNote').textContent = !state.ghost ? '' : !harm ? 'Choose "Comparable across years" under Advanced to see this estimate.' : !gm ? 'Too few detections by the newer satellites in this area for an estimate.'
-    : `Dashed bars: about how many detections there would be in every year if small fires were counted too, with the same share as in recent years (about ${gm.all.toFixed(1)} per adjusted detection here). An estimate: in single years the factor was ${d3.format('+.0%')(gm.lo - 1)} to ${d3.format('+.0%')(gm.hi - 1)} from its average.`;
 }
 
-// Sensor check: in the years both flew, adjusted VIIRS should land on top of measured Aqua.
+// Sensor check: in the years both flew, adjusted Aqua should land on top of measured VIIRS.
 // The adjusted values shown here come from tables fitted without the year they are compared in.
 function renderCheck(){
   const Hv = 120, ih = Hv - Tp - B, t0 = tAt(SAT.window[0]), t1 = Math.min(T-1, tAt(SAT.window[1])), ts = d3.range(t0, t1 + 1), n = ts.length;
-  const aq = ts.map(t => months[t].raw.aqua), cv2 = ts.map(t => months[t].pred[PKEY]), rw = ts.map(t => months[t].raw[PKEY]);
+  const aq = ts.map(t => months[t].raw[PKEY]), cv2 = ts.map(t => months[t].pred[PKEY]), rw = ts.map(t => months[t].raw.aqua);   // aq: the measured reference
   const sc = d3.scaleLinear().domain([0, Math.max(1, d3.max(aq), d3.max(cv2))]).nice(3).range([Tp + ih, Tp]);
   const x = i => L + iw*i/(n - 1), line = d3.line().x((d,i) => x(i)).y(d => sc(d));
-  let h = `<svg viewBox="0 0 ${Wv} ${Hv}" role="img" aria-label="Monthly detections: Aqua measured and VIIRS adjusted">`;
+  let h = `<svg viewBox="0 0 ${Wv} ${Hv}" role="img" aria-label="Monthly detections: VIIRS measured and Aqua adjusted">`;
   sc.ticks(3).forEach(v => { h += `<line class="grid" x1="${L}" x2="${Wv-Rm}" y1="${sc(v)}" y2="${sc(v)}"/><text class="axis" x="${L-6}" y="${sc(v)+4}" text-anchor="end">${sfmt(v)}</text>`; });
   ts.forEach((t, i) => { if(monOf(t) === 0) h += `<text class="axis" x="${x(i)}" y="${Hv-5}" text-anchor="middle">${yearOf(t)}</text>`; });
   h += `<path class="cur" d="${line(aq)}"/><path class="conv" d="${line(cv2)}"/>`;
-  ts.forEach((t, i) => { h += `<rect class="hit" x="${x(i)-iw/(2*(n-1))}" y="${Tp}" width="${iw/(n-1)}" height="${ih}" data-tip="${MON[monOf(t)]} ${yearOf(t)}&#10;Aqua measured: ${fmt(aq[i])}&#10;VIIRS adjusted: ${fmt(cv2[i])}&#10;VIIRS as reported: ${fmt(rw[i])}"/>`; });
+  ts.forEach((t, i) => { h += `<rect class="hit" x="${x(i)-iw/(2*(n-1))}" y="${Tp}" width="${iw/(n-1)}" height="${ih}" data-tip="${MON[monOf(t)]} ${yearOf(t)}&#10;VIIRS measured: ${fmt(aq[i])}&#10;Aqua adjusted: ${fmt(cv2[i])}&#10;Aqua as reported: ${fmt(rw[i])}"/>`; });
   $('check').innerHTML = h + '</svg>';
   $('checkSpan').textContent = `${yearOf(t0)} to ${yearOf(t1)}`;
   const tot = d3.sum(aq), err = tot ? d3.sum(aq, (v, i) => Math.abs(cv2[i] - v))/tot : NaN;
-  $('checkLine').textContent = tot >= 50 ? `In the years both flew, adjusted ${SENSOR[PKEY]} is off by ${pct(err)} of the Aqua total here, month by month. Unadjusted, VIIRS reports ${(d3.sum(rw)/tot).toFixed(1)} times more.`
+  $('checkLine').textContent = tot >= 50 ? `In the years both flew, adjusted Aqua is off by ${pct(err)} of the ${SENSOR[PKEY]} total here, month by month. Unadjusted, Aqua reports ${(tot/Math.max(d3.sum(rw), 1)).toFixed(1)} times fewer.`
     : 'Too few fire detections here to compare the satellites.';
 }
 
@@ -1495,30 +1479,32 @@ function buildAbout(){
   <h3>The method</h3>
   <ol>
     <li><b>Same fires only.</b> Keep detections marked as vegetation fire. Drop MODIS confidence below 30 % and VIIRS "low" confidence.</li>
-    <li><b>One reference.</b> Aqua MODIS passes at the same local time as VIIRS, so every number is what Aqua would have reported. These are the adjusted detections.</li>
-    <li><b>Conversion tables.</b> For the years both flew, every group of VIIRS detections (same 0.05° cell, date, day or night) is matched with the Aqua pixels in that cell. The average depends on fire strength, pixel count, day or night, and region (5° tiles, falling back to 20° tiles and then the globe).</li>
-    <li><b>Monthly calibration.</b> A ratio per region and calendar month adds the Aqua pixels that had no VIIRS partner and removes the seasonal difference.</li>
-    <li><b>One record.</b> Terra scaled to Aqua before August 2002 (the older satellite), Aqua as measured until 2021 (the reference satellite), adjusted ${SENSOR[PKEY]} from 2022 (the newer satellite), when Aqua's orbit drifts. Days when Aqua did not record are found from the data and filled.</li>
+    <li><b>One reference.</b> VIIRS carries the record on after MODIS, so every number is what a VIIRS instrument would have reported. The present is measured. Only the MODIS past, which is closed and will not grow, is adjusted.</li>
+    <li><b>The exchange rate.</b> For the years both flew with a stable orbit (${SAT.window[0].slice(0,4)} to ${SAT.window[1].slice(0,4)}): VIIRS detections divided by Aqua detections, per region of 20°, calendar month, and day or night. It carries the small fires MODIS misses, which differ by region and season. A region with little data is blended with the world value for that month, so there is no hard cut.</li>
+    <li><b>Tested against the alternatives.</b> Every build also tries one global factor, a ratio without day and night, and conversion tables by fire strength, and reports all of them below. The record uses the one with the lowest error on hidden years.</li>
+    <li><b>One record.</b> Adjusted Terra before August 2002, adjusted Aqua until ${MONTHS[monOf(VSTART - 1)]} ${yearOf(VSTART - 1)}, then VIIRS as measured${VAL.carrier !== PRIMARY ? ` (${SENSOR[PKEY]} first, ${SENSOR[VAL.carrier.toLowerCase()]} from ${VAL.starts[VAL.carrier].slice(0,4)})` : ''}. Days when Aqua did not record are found from the data and filled from Terra.</li>
   </ol>
   <h3>Normal, and the season</h3>
   <p>Normal for a month is the middle value of that calendar month in 2003 to 2020. The fire season of an area starts after its quietest month. "Season so far" adds up the detections since then and compares them with the same running total in 2003 to 2020.</p>
   <h3>Does it work?</h3>
-  <p>Each year when both flew is hidden in turn. The tables are learned from the other years and the adjusted VIIRS is compared with real Aqua in the hidden year. Error per 5° tile and month (lower is better):</p>
+  <p>Each year when both flew is hidden in turn. The rates are learned from the other years and the adjusted Aqua is compared with real VIIRS in the hidden year. Error per 5° tile and month (lower is better):</p>
   <table><tr><th>Adjustment</th>${head}</tr>
-    ${line('None (VIIRS as reported)', 'raw')}${line('One global factor', 'global_factor')}${line('Monthly ratio per region', 'ratio')}${line('Conversion tables (used)', 'table', true)}
+    ${line('None (Aqua as reported)', 'raw')}${line('One global factor', 'global_factor')}${line('Monthly ratio per region', 'ratio', VAL.method === 'ratio')}${line('Monthly ratio per region, day and night apart', 'ratio_dn', VAL.method === 'ratio_dn')}${line('Conversion tables by fire strength', 'table', VAL.method === 'table')}
   </table>
-  <p>The "compared with normal" level is the same as real Aqua's in ${pct(SAT.anomaly_agreement.table)} of tested tile-months, and the same or the next level in ${pct(SAT.anomaly_agreement.table_within_one)}.
-  ${VAL.twin ? ` Two identical VIIRS instruments (Suomi NPP and NOAA-20) disagree by ${pct(VAL.twin.overlap)} after adjustment in the overlap years, and by ${pct(VAL.twin.after)} after 2021. No adjustment can beat the first number.` : ''}
+  <p>The highlighted row is the one used. ${SAT.backward ? `Learned only from ${SAT.backward.train[0]} to ${SAT.backward.train[1]} and tested on ${SAT.backward.test[0]} to ${SAT.backward.test[1]}, the way the record reaches back in time, the error is ${pct(SAT.backward[VAL.method])}.` : ''}
+  ${VAL.step && VAL.step.raw ? ` The jump when VIIRS starts (mean of ${VAL.step.years[1][0]} to ${VAL.step.years[1][1]} over ${VAL.step.years[0][0]} to ${VAL.step.years[0][1]}): ${VAL.step.raw.toFixed(2)} times as reported, ${VAL.step.harmonized.toFixed(2)} times adjusted, ${VAL.step.aqua.toFixed(2)} times for Aqua alone, which flew through both.` : ''}</p>
+  <p>The "compared with normal" level is the same as real VIIRS's in ${pct(SAT.anomaly_agreement[VAL.method])} of tested tile-months, and the same or the next level in ${pct(SAT.anomaly_agreement[VAL.method + '_within_one'])}.
+  ${VAL.twin ? ` Two identical VIIRS instruments (Suomi NPP and NOAA-20) differ by ${pct(VAL.twin.overlap)} per tile and month and by ${(100*Math.abs(VAL.twin.bias - 1)).toFixed(1)} % in total, so the record can pass from one to the next.` : ''}
   Choose "Confidence in the numbers" under Show on the map to see the error by region.</p>
   ${gaps.length ? `<p>Aqua outages found and filled: ${gaps.slice(0, 8).map(([a, b]) => `${a} to ${b}`).join('; ')}${gaps.length > 8 ? `; and ${gaps.length - 8} more` : ''}.</p>` : ''}
   <h3>The last 7 days</h3>
-  <p>The FIRMS near-real-time file of ${SENSOR.n20}, adjusted with the same tables. Times are local solar time. A strong fire releases more heat than a set level. "Burning N of 7 days" counts the days with a detection in the same 5 km square. These are first numbers and can change.</p>
+  <p>The FIRMS near-real-time file of ${SENSOR.n20}. It is a VIIRS instrument, so its counts are already in the unit of the record. Times are local solar time. A strong fire releases more heat than a set level. "Burning N of 7 days" counts the days with a detection in the same 5 km square. These are first numbers and can change.</p>
   <h3>What to keep in mind</h3>
   <ul>
     <li>A fire detection is a satellite pixel with the heat of a fire, not one fire. A large fire gives many detections.</li>
     <li>Counts are not corrected for clouds. A cloudy month looks like a quiet month.</li>
-    <li>After 2021 the adjustment cannot be checked against Aqua, because its orbit drifts.</li>
-    <li>Small fires that MODIS never saw before VIIRS cannot be recovered. The "small fires" bars are a labeled estimate.</li>
+    <li>The years before ${yearOf(VSTART)} are estimates. Small fires that MODIS never saw are added as the average for a region and month, not one by one, so a small area with unusual fires can be off.</li>
+    <li>The night part of those years is the least certain: Aqua saw few fires at night.</li>
     <li>The months before August 2002 come from Terra, which passes in the morning. They are less certain.</li>
     <li>The monthly record ends in ${MONTHS[monOf(T-1)]} ${yearOf(T-1)}, the last complete yearly archive.</li>
   </ul>
@@ -1542,7 +1528,6 @@ $('play').onclick = () => setPlaying(!playing);
 $('tRange').addEventListener('input', e => { setPlaying(false); setT(+e.target.value); });
 $('dlCsv').onclick = downloadCsv; $('dlHot').onclick = downloadDetections; $('dlBrief').onclick = briefing; $('copyLink').onclick = copyLink;
 $('yFrom').onchange = $('yTo').onchange = () => { if(months){ renderCalendar(); renderYears(); } };
-$('ghost').onclick = () => { state.ghost = !state.ghost; $('ghost').setAttribute('aria-pressed', state.ghost); if(months) renderYears(); };
 $('aboutBtn').onclick = $('trustAbout').onclick = () => $('about').showModal();
 $('boxDraw').onclick = () => setDrawMode(drawMode === 'box' ? null : 'box');
 $('polyDraw').onclick = () => setDrawMode(drawMode === 'poly' ? null : 'poly');

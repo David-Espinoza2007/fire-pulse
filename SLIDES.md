@@ -22,11 +22,11 @@ NASA Space Apps 2026, challenge "Harmonization of MODIS and VIIRS Hot Spots". Te
 
 ## Slide 3 - Our idea
 
-**Ask of every VIIRS detection: what would MODIS have reported?**
+**Ask of every MODIS detection: what would VIIRS have reported?**
 
-- One common unit: the MODIS-equivalent hotspot. Aqua MODIS is the reference, because it passes at the same local time as VIIRS.
-- Conversion tables learned from the years when both sensors flew. They depend on fire strength, region, month, and day or night. One global factor is wrong, because the share of small fires differs between regions.
-- Terra is scaled for 2000 to 2002. Days when Aqua did not record are found from the data and filled.
+- One common unit: the VIIRS-equivalent detection. VIIRS is the reference because it carries the record on: the present is measured, only the closed MODIS past is an estimate.
+- An exchange rate learned from the years when both sensors flew (2012 to 2021). It depends on region, month, and day or night. One global factor is wrong, because the share of small fires differs between regions.
+- Aqua MODIS is converted for 2002 to 2011, Terra for 2000 to 2002. Days when Aqua did not record are found from the data and filled.
 
 *Picture:* "Hotspots per year" in **Harmonized** mode, same area as slide 2.
 
@@ -34,18 +34,19 @@ NASA Space Apps 2026, challenge "Harmonization of MODIS and VIIRS Hot Spots". Te
 
 **Tested on years the method never saw.**
 
-Error against real Aqua MODIS, per 5 degree tile and month, whole world, hidden years 2018 to 2021:
+Error against real VIIRS (Suomi NPP), per 5 degree tile and month, whole world, each year of 2012 to 2021 hidden in turn:
 
 | Method | Error |
 |---|---|
-| Raw VIIRS counts | 513 % |
-| One global factor | 29 % |
-| Monthly ratio per region | 17 % |
-| Our conversion tables | 12 % |
+| Raw Aqua counts | 84 % |
+| One global factor | 28 % |
+| Conversion tables by fire strength | 20 % |
+| Our ratio per region, month, day and night | 16 % |
 
-- The same test with Suomi NPP over ten hidden years (2012 to 2021) gives 12 % again.
-- The "compared with normal" class is the same or the next class in 93 % of tested months.
-- Two identical VIIRS instruments disagree by 6 % after conversion. No conversion can beat that, so 12 % is close to the limit.
+- Learned only from 2017 to 2021 and tested on 2012 to 2016, the way the record reaches back: 16 % again.
+- The jump when VIIRS starts: 6.1 times in raw counts, 0.90 after harmonizing, 0.89 for Aqua alone, which flew through both.
+- The "compared with normal" class is the same or the next class in 76 % of tested months.
+- Two identical VIIRS instruments differ by 7 % per tile and month and by 0.1 % in total, so NOAA-20 continues the record of Suomi NPP.
 - The trust map shows where the conversion is reliable and where it is not.
 
 *Picture:* the trust map and the "Can you trust it?" panel.
@@ -67,8 +68,8 @@ Error against real Aqua MODIS, per 5 degree tile and month, whole world, hidden 
 **Honest limits.**
 
 - No correction for cloud cover: a cloudy month looks quiet.
-- After 2021 the conversion cannot be checked against Aqua, because Aqua's orbit drifts.
-- Small fires that MODIS never saw before VIIRS cannot be recovered. The app shows them only as a labeled estimate.
+- The years before 2012 are estimates: small fires that MODIS never saw are added as a regional average, not one by one.
+- The night part of those years is the least certain (39 % error).
 - The months before August 2002 come from Terra and are less certain.
 
 ## Slide 7 - Why it matters
@@ -76,7 +77,7 @@ Error against real Aqua MODIS, per 5 degree tile and month, whole world, hidden 
 **A fire history that survives the end of MODIS.**
 
 - Fire managers, responders and scientists get one consistent 25-year record for any area, instead of two records that cannot be compared.
-- Any new satellite can join: it learns its own conversion tables during an overlap period.
+- The record does not depend on MODIS any more: every new VIIRS month is measured, not converted. Any new satellite can join through an overlap period.
 - Next steps: near-real-time months, Sentinel-3 for the morning pass, cloud flags.
 - Open code. Data: NASA FIRMS.
 
@@ -85,7 +86,7 @@ Error against real Aqua MODIS, per 5 degree tile and month, whole world, hidden 
 ## 30-second video script (alternative to slides)
 
 1. (0-6 s) Raw mode, hotspots per year. "Satellite fire counts jump when a new sensor arrives. The fires did not change. The satellite did."
-2. (6-12 s) Click **Harmonized**. The jump disappears. "Fire Calendar converts every VIIRS detection into what MODIS would have reported."
+2. (6-12 s) Click **Harmonized**. The jump disappears. "Fire Pulse converts every MODIS detection into what VIIRS would have reported."
 3. (12-20 s) Spin the globe, select a country, show the calendar and the status line. "One consistent record from 2000 to today, for any area."
-4. (20-27 s) Open the trust map and the proof table. "Tested on years it never saw: 12 % error, against 513 % for raw counts."
+4. (20-27 s) Open the trust map and the proof table. "Tested on years it never saw: 16 % error, against 84 % for raw counts."
 5. (27-30 s) Title card: "Fire Pulse. Built on NASA FIRMS data."

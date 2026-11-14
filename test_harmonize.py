@@ -12,7 +12,7 @@ import pytest
 import harmonize as H
 import pipeline
 
-MEANS = {1.0: 0.1, 15.0: 0.5, 300.0: 2.0}   # FRP sum of a VIIRS row -> true mean Aqua pixel count
+MEANS = {1.0: 0.1, 15.0: 0.5, 300.0: 2.0}   # FRP sum of a source row (v) -> true mean pixel count of the reference (a)
 
 
 def poisson(rng, lam):
@@ -24,7 +24,7 @@ def poisson(rng, lam):
 
 @pytest.fixture(scope="module")
 def synthetic():
-    """Two years of cell-pass rows with a known VIIRS -> Aqua relation and a known Aqua-only share."""
+    """Two years of cell-pass rows with a known source -> reference relation and a known reference-only share."""
     rng, v, a = random.Random(1), [], []
     for year in (2019, 2020):
         for day in range(1, 31):
@@ -34,7 +34,7 @@ def synthetic():
                 v.append((i % 100, i // 100, date, "D", 1, frp, False))
                 if k := poisson(rng, MEANS[frp]):
                     a.append((i % 100, i // 100, date, "D", k))
-            a += [(i, 50, date, "D", 1) for i in range(60)]   # Aqua pixels with no VIIRS partner
+            a += [(i, 50, date, "D", 1) for i in range(60)]   # reference pixels with no source partner
     for i in range(40):                              # sparse neighbor tile with a very different relation
         v.append((100 + i, 0, "2019-03-01", "D", 1, 1.0, False))
         a.append((100 + i, 0, "2019-03-01", "D", 5))
@@ -59,16 +59,18 @@ def test_held_out_total(synthetic):
     assert abs(est / actual - 1) < 0.05
 
 
-def test_sparse_tile_uses_larger_tile(synthetic):
+def test_sparse_tile_leans_on_larger_tile(synthetic):
+    """40 samples with a mean of 5 next to 6000 with a mean of 0.1: the value is a blend, not a hard switch."""
     sparse = "year(local_date) = 2019 AND cell_x >= 100"
-    est, cal = synthetic.execute(f"""SELECT avg(est_table), (SELECT cal FROM f_cal)
-                                     FROM ({H.apply('f', 'v', sparse)})""").fetchone()
+    mu = synthetic.execute(f"SELECT avg(mu) FROM ({H._mu('f', H._classed('v', sparse))})").fetchone()[0]
     pooled = synthetic.execute("SELECT mu FROM f_l20 WHERE fc = 1").fetchone()[0]
-    assert est / cal == pytest.approx(pooled) and pooled < 1   # not the tile's own mean of 5
+    assert pooled < 1 and mu == pytest.approx((40 * 5 + H.SHRINK * pooled) / (40 + H.SHRINK), rel=0.02)
+    dense = synthetic.execute(f"""SELECT avg(mu) FROM ({H._mu('f', H._classed('v', "year(local_date) = 2019 AND cell_x < 100 AND frp_sum = 300"))})""").fetchone()[0]
+    assert dense == pytest.approx(MEANS[300.0], rel=0.1)   # a tile with plenty of data keeps its own value
 
 
 def test_day_and_night_calibrated_apart():
-    """Aqua-only pixels at night only: the night part must take all of them, the day part none."""
+    """Reference-only pixels at night only: the night part must take all of them, the day part none."""
     rng, con = random.Random(4), duckdb.connect()
     con.execute("CREATE TABLE v (cell_x INT, cell_y INT, local_date DATE, daynight VARCHAR, n_pixels INT, frp_sum FLOAT, sat_flag BOOL)")
     con.execute("CREATE TABLE a (cell_x INT, cell_y INT, local_date DATE, daynight VARCHAR, n_pixels INT)")
@@ -85,7 +87,7 @@ def test_day_and_night_calibrated_apart():
     H.fit(con, "f", "v", "a", "TRUE")
     est = dict(con.execute(f"SELECT daynight, sum(est_table) FROM ({H.apply('f', 'v', 'TRUE')}) GROUP BY 1").fetchall())
     actual = dict(con.execute("SELECT daynight, sum(n_pixels) FROM a GROUP BY 1").fetchall())
-    assert est["N"] == pytest.approx(actual["N"]) and est["D"] == pytest.approx(actual["D"])
+    assert est["N"] == pytest.approx(actual["N"], rel=0.02) and est["D"] == pytest.approx(actual["D"], rel=0.02)
 
 
 def test_frp_ratio_recovers_known_factor():
@@ -121,7 +123,7 @@ def test_local_date_and_cleaning():
 
 @pytest.fixture(scope="module")
 def root(tmp_path_factory):
-    """A small fake record run through the real pipeline: Terra-only, Aqua, overlap and model years."""
+    """A small fake record run through the real pipeline: Terra-only, Aqua, overlap and VIIRS-only years."""
     root, rng, con = tmp_path_factory.mktemp("data"), random.Random(2), duckdb.connect()
 
     def year_rows(year, sats, n):
@@ -147,28 +149,46 @@ def test_totals_are_conserved(root):
         assert con.execute(f"SELECT sum({col}) FROM read_parquet('{r}/serve/monthly.parquet')").fetchone()[0] == raw
 
 
-def test_stable_aqua_years_are_untouched(root):
-    bad = duckdb.connect().execute(f"""SELECT count(*) FROM read_parquet('{root.as_posix()}/serve/monthly.parquet')
-        WHERE month >= DATE '{H.AQUA_START}' AND month < DATE '{H.MODEL_START}' AND harm <> raw_aqua""").fetchone()[0]
-    assert bad == 0
+def viirs_start(root):
+    return json.loads((root / "serve" / "validation.json").read_text())["viirs_start"]
+
+
+def test_viirs_years_are_untouched(root):
+    """From the first full VIIRS month the record is VIIRS as measured; before it, it is an estimate."""
+    con, m = duckdb.connect(), f"read_parquet('{root.as_posix()}/serve/monthly.parquet')"
+    start = viirs_start(root)
+    assert start == "2018-02-01"
+    assert con.execute(f"SELECT count(*) FROM {m} WHERE month >= DATE '{start}' AND harm <> raw_n20").fetchone()[0] == 0
+    assert con.execute(f"SELECT sum(harm) > 0 AND sum(raw_n20) = 0 FROM {m} WHERE month < DATE '2018-01-01'").fetchone()[0]
+
+
+def test_proofs_cover_both_modis_satellites(root):
+    val = json.loads((root / "serve" / "validation.json").read_text())
+    sat = val["satellites"]["N20"]
+    assert val["unit"] == "VIIRS-equivalent detections" and val["primary"] == val["carrier"] == "N20"
+    assert [f["year"] for f in sat["folds"]] == [2018, 2019, 2020, 2021] and sat["backward"]["test"] == [2018, 2019]
+    assert all(sat["overall"][k] >= 0 for k in ("raw", "global_factor", "ratio", "table")) and val["terra"]["error"] >= 0
+    assert set(val["step"]) == {"raw", "harmonized", "aqua", "years"}
 
 
 def test_night_and_frp(root):
     con, r = duckdb.connect(), root.as_posix()
     con.execute(f"CREATE VIEW m AS SELECT * FROM read_parquet('{r}/serve/monthly.parquet')")
     assert con.execute("SELECT count(*) FROM m WHERE harm_night < -1e-9 OR harm_night > harm + 1e-6 OR frp < 0").fetchone()[0] == 0
-    stable = f"month >= DATE '{H.AQUA_START}' AND month < DATE '{H.MODEL_START}'"
-    aqua = con.execute(f"""SELECT sum(n_pixels) FILTER (daynight = 'N'), sum(frp_sum) FROM read_parquet('{r}/cell_pass/Aqua/*.parquet')
-                           WHERE local_date >= DATE '{H.AQUA_START}' AND local_date < DATE '{H.MODEL_START}'""").fetchone()
-    got = con.execute(f"SELECT sum(harm_night), sum(frp) FROM m WHERE {stable}").fetchone()
-    assert got[0] == aqua[0] and got[1] == pytest.approx(aqua[1], rel=1e-5)   # no gap days in the fake record
+    start = viirs_start(root)
+    measured = f"month >= DATE '{start}'"
+    n20 = con.execute(f"""SELECT sum(n_pixels) FILTER (daynight = 'N'), sum(frp_sum) FROM read_parquet('{r}/cell_pass/N20/*.parquet')
+                          WHERE local_date >= DATE '{start}'""").fetchone()
+    got = con.execute(f"SELECT sum(harm_night), sum(frp) FROM m WHERE {measured}").fetchone()
+    assert got[0] == n20[0] and got[1] == pytest.approx(n20[1], rel=1e-5)
     assert con.execute(f"""SELECT count(*) FROM m FULL JOIN (
         SELECT cell_x, cell_y, CAST(date_trunc('month', local_date) AS DATE) AS month, sum(n_pixels) AS n
-        FROM read_parquet('{r}/cell_pass/Aqua/*.parquet') WHERE daynight = 'N' GROUP BY ALL) c USING (cell_x, cell_y, month)
-        WHERE {stable} AND coalesce(harm_night, 0) <> coalesce(n, 0)""").fetchone()[0] == 0
+        FROM read_parquet('{r}/cell_pass/N20/*.parquet') WHERE daynight = 'N' GROUP BY ALL) c USING (cell_x, cell_y, month)
+        WHERE {measured} AND coalesce(harm_night, 0) <> coalesce(n, 0)""").fetchone()[0] == 0
     assert con.execute(f"SELECT sum(harm_night) > 0 AND sum(harm_night) < sum(harm) FROM m WHERE month < DATE '{H.AQUA_START}'").fetchone()[0]
-    for era in (f"month < DATE '{H.AQUA_START}'", f"month >= DATE '{H.MODEL_START}'"):   # fake VIIRS rarely meets Aqua: no night check there
-        assert con.execute(f"SELECT sum(frp) > 0 FROM m WHERE {era}").fetchone()[0]
+    for era in (f"month < DATE '{H.AQUA_START}'", f"month >= DATE '{H.AQUA_START}' AND month < DATE '{start}'"):   # the converted eras
+        # fake Aqua night rows never share a cell and date with VIIRS, so there is no night check for them
+        assert con.execute(f"SELECT sum(harm) > 0 AND sum(frp) > 0 FROM m WHERE {era}").fetchone()[0]
     country = con.execute(f"SELECT sum(harm_night), sum(frp) FROM read_parquet('{r}/serve/monthly_country.parquet')").fetchone()
     assert country == pytest.approx(con.execute("SELECT sum(harm_night), sum(frp) FROM m").fetchone())
     folds = json.loads((root / "serve" / "validation.json").read_text())["satellites"]["N20"]
@@ -195,7 +215,10 @@ def test_api_calendar(root, monkeypatch):
     total = lambda bbox: sum(m["harmonized"] for m in client.get("/api/calendar", params={"bbox": bbox}).json()["months"])
     months = client.get("/api/calendar", params={"bbox": "-101,19,-99,21"}).json()["months"]
     assert [m["month"] for m in months][:2] == ["2000-11", "2000-12"] and len(months) == len({m["month"] for m in months})
-    assert months[-1]["month"] == "2022-12" and months[-1]["source"] == "n20_model" and months[-1]["low"] <= months[-1]["harmonized"]
+    assert months[-1]["month"] == "2022-12" and months[-1]["source"] == "viirs" and months[-1]["low"] == months[-1]["harmonized"]   # measured: no range
+    assert {m["source"] for m in months} == {"terra_model", "aqua_model", "viirs"}
+    old = next(m for m in months if m["month"] == "2005-06")
+    assert old["source"] == "aqua_model" and old["harmonized"] > 0 and old["low"] < old["high"]   # an estimate: it has a range
     assert total("-101,19,-99,21") == pytest.approx(total("-101,19,-100,21") + total("-100,19,-99,21"), abs=1)
     assert total("-101,19,-99,21") == pytest.approx(
         sum(m["harmonized"] for m in client.get("/api/calendar", params={"country": "Testland"}).json()["months"]), abs=1)
@@ -205,7 +228,7 @@ def test_api_calendar(root, monkeypatch):
                               for i, c in enumerate(("nominal", "high", "low", "nominal"))))
     app.LIVE_URL = week.as_uri()
     live = client.get("/api/live", params={"bbox": "-101,19,-99,21"}).json()
-    assert live["raw"] == 3 and live["harmonized"] >= 0 and live["to"] == "2026-11-12"   # the low-confidence row is dropped
+    assert live["raw"] == 3 and live["harmonized"] == 3 and live["to"] == "2026-11-12"   # the low-confidence row is dropped
     assert sum(c[2] for c in client.get("/api/live/cells").json()["cells"]) == 3
     blob = gzip.decompress(client.get("/api/globe.bin").content)   # the packed grid the globe animates
     head = json.loads(blob[4:4 + struct.unpack("<I", blob[:4])[0]])
