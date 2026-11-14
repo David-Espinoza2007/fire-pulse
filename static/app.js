@@ -527,8 +527,8 @@ let tsBytes = 0, tsFlight = 0, tilesOff = false, tileLv = 0, prefetch = null, ti
 const TS_MAX = 250e6;
 function levelFor(k, hyst){
   if(zoom < 1.8) return 0;
-  let best = 0; for(let L=3;L>=1;L--) if(TL[L].cell*RAD*k >= 3){ best = L; break; }
-  if(hyst && tileLv > best && TL[tileLv].cell*RAD*k >= 2.6) best = tileLv;
+  let best = 0; for(let L=3;L>=1;L--) if(TL[L].cell*RAD*k >= 2){ best = L; break; }
+  if(hyst && tileLv > best && TL[tileLv].cell*RAD*k >= 1.7) best = tileLv;
   return best || 1;
 }
 const tileBox = (L, x, y) => { const s = TL[L].tf*0.05, w = -180 + x*s, so = -90 + y*s; return [w, so, w + s, so + s]; };
@@ -810,7 +810,7 @@ function frame(pts){
   let minDot = 1; for(const p of xyz){ const d = X*p[0] + Y*p[1] + Z*p[2]; if(d < minDot) minDot = d; }
   return {lon:Math.atan2(Y, X)/RAD, lat:Math.asin(Z)/RAD, rad:Math.acos(clamp(minDot, -1, 1))};
 }
-const goTo = where => flyTo(-where.lon, clamp(-where.lat, -75, 75), clamp(0.85/Math.sin(clamp(where.rad, 1.5*RAD, 60*RAD)), 1.2, 10));
+const goTo = where => flyTo(-where.lon, clamp(-where.lat, -75, 75), clamp(0.85/Math.sin(clamp(where.rad, 0.5*RAD, 60*RAD)), 1.2, 40));
 const frameBox = b => frame([[b[0], b[1]], [b[2], b[1]], [b[0], b[3]], [b[2], b[3]], [(b[0] + b[2])/2, (b[1] + b[3])/2]]);
 function anchor(ll, x, y){   // turn the map so the place ll sits under the screen point x, y
   for(let i=0;i<2;i++){
@@ -819,7 +819,8 @@ function anchor(ll, x, y){   // turn the map so the place ll sits under the scre
   }
 }
 
-let last = 0, playing = false, playAcc = 0, lastCheck = 0, lastTileReq = 0;
+let last = 0, playing = false, playAcc = 0, speed = 1, rng = [0, T-1],   // Play runs inside rng, at speed times one month per 110 ms
+     lastCheck = 0, lastTileReq = 0;
 function tick(now){
   const dt = Math.min(100, now - last); last = now;
   if(fly){
@@ -830,7 +831,7 @@ function tick(now){
   } else if(spin && !dragging && !drawMode){
     const r = projection.rotate(); projection.rotate([r[0] + dt*0.004, r[1]]); dirty = true;
   }
-  if(playing){ playAcc += dt; if(playAcc > 110){ playAcc = 0; if(state.t >= T-1) setPlaying(false); else setT(state.t + 1); } }
+  if(playing){ playAcc += dt; if(playAcc > 110/speed){ playAcc = 0; if(state.t >= rng[1]) setPlaying(false); else setT(state.t + 1); } }
   const mv = isMoving(now);
   if(mv) lastMove = now; else if(wasMoving) dirty = true;   // movement ended: one full-detail frame
   wasMoving = mv;
@@ -892,7 +893,7 @@ cv.addEventListener('pointermove', e => {
   if(pinch){
     if(pointers.size < 2) return;
     const [d, mx, my] = pinchAt();
-    setZoom(clamp(pinch.z0*d/pinch.d0, 0.8, 14));
+    setZoom(clamp(pinch.z0*d/pinch.d0, 0.8, 60));
     if(pinch.ll && isFlat()) anchor(pinch.ll, mx, my);
     else { const s = 57.3/projection.scale(); projection.rotate([pinch.r[0] + (mx - pinch.mx)*s, clamp(pinch.r[1] - (my - pinch.my)*s, -80, 80)]); }
     dirty = true; return;
@@ -958,7 +959,7 @@ cv.addEventListener('pointerleave', () => { tip.hidden = true; });
 cv.addEventListener('wheel', e => {
   e.preventDefault(); fly = null; spin = false; lastWheel = performance.now();
   const [x, y] = local(e), ll = isFlat() ? lonLat(x, y) : null;
-  setZoom(clamp(zoom*Math.exp(-e.deltaY*0.0015), 0.8, 14));
+  setZoom(clamp(zoom*Math.exp(-e.deltaY*0.0015), 0.8, 60));
   if(ll && isFlat()) anchor(ll, x, y);   // flat map: zoom toward the cursor
   dirty = true;
 }, {passive:false});
@@ -1362,8 +1363,8 @@ function renderCheck(){
 /* ---------- controls ---------- */
 function setT(t){ state.t = clamp(t, 0, T-1); if(state.t !== T-1) state.pick = true; if(state.live) setLive(false); else renderTime(); }
 function setPlaying(p){
-  if(p){ setLive(false); if(state.t >= T-1) setT(0); }
-  playing = p; playAcc = 0; $('play').textContent = p ? '❚❚ Pause' : `▶ Play ${Y0}–${yearOf(T-1)}`;
+  if(p){ setLive(false); if(state.t >= rng[1] || state.t < rng[0]) setT(rng[0]); }
+  playing = p; playAcc = 0; $('play').textContent = p ? '❚❚ Pause' : `▶ Play ${yearOf(rng[0])}–${yearOf(rng[1])}`;
   if(!p) saveHash();
 }
 const check = (name, v) => { const r = document.querySelector(`input[name=${name}][value=${v}]`); if(r) r.checked = true; };
@@ -1600,6 +1601,16 @@ $('wLatest').onclick = () => { setPlaying(false); state.pick = false; setT(T-1);
 $('wPick').onclick = () => { setPlaying(false); state.pick = true; if(state.live) setLive(false); else renderTime(); $('pMonth').focus(); };
 $('pYear').onchange = $('pMonth').onchange = () => { setPlaying(false); setT(tOf(+$('pYear').value, +$('pMonth').value)); };
 $('play').onclick = () => setPlaying(!playing);
+for(const id of ['rFrom', 'rTo']) for(const y of YEARS) $(id).add(new Option(y, y));
+$('rFrom').value = YEARS[0]; $('rTo').value = YEARS.at(-1);
+function setRange(){   // the timeline and Play cover only the chosen years
+  const a = +$('rFrom').value, b = +$('rTo').value;
+  rng = [clamp(tOf(Math.min(a, b), 0), 0, T-1), clamp(tOf(Math.max(a, b), 11), 0, T-1)];
+  $('tRange').min = rng[0]; $('tRange').max = rng[1]; $('eras').hidden = rng[0] > 0 || rng[1] < T-1;
+  setPlaying(false); if(!state.live && (state.t < rng[0] || state.t > rng[1])) setT(clamp(state.t, rng[0], rng[1])); else renderTime();
+}
+$('rFrom').onchange = $('rTo').onchange = setRange;
+$('speed').onchange = e => { speed = +e.target.value; };
 $('tRange').addEventListener('input', e => { setPlaying(false); setT(+e.target.value); });
 $('dlCsv').onclick = downloadCsv; $('dlHot').onclick = downloadDetections; $('dlBrief').onclick = briefing; $('copyLink').onclick = copyLink;
 $('yFrom').onchange = $('yTo').onchange = () => { if(months){ renderCalendar(); renderYears(); } };
