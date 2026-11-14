@@ -164,3 +164,81 @@ def test_cache_headers(client):
     assert c.get("/app.js").headers["cache-control"] == "no-cache" and c.get("/").headers["cache-control"] == "no-cache"
     assert "max-age" in c.get("/vendor/d3.min.js").headers["cache-control"]
     assert c.get("/api/globe.bin").headers["cache-control"] == "no-cache"
+
+
+def decode_tile(blob):
+    import struct
+    from array import array
+    nh = struct.unpack("<I", blob[:4])[0]
+    head, pos = __import__("json").loads(blob[4:4 + nh]), 4 + nh + (-(4 + nh) % 4)
+    take = lambda code, n: (lambda a, size: (a, pos + size + (-size % 4)))(array(code, blob[pos:pos + n * array(code).itemsize]), n * array(code).itemsize)
+    out = {}
+    for name, code, n in (("start", "I", head["months"] + 1), ("idx", "H", head["nnz"]), ("harm", "H", head["nnz"]),
+                          ("night", "H", head["nnz"]), ("raw", "H", head["nnz"])):
+        out[name], pos = take(code, n)
+    assert pos == len(blob)
+    return head, out
+
+
+def test_tiles(client):
+    import duckdb
+    c, app = client
+    box, tot = (-100.0, 20.0, -95.0, 25.0), {}
+    for level in (1, 2, 3):
+        tx, ty = {1: (3, 4), 2: (8, 11), 3: (16, 22)}[level]   # each covers lon -100..-95 and lat 20..25
+        r = c.get(f"/api/tiles/{level}/{tx}/{ty}")
+        assert r.status_code == 200 and r.headers["content-encoding"] == "gzip" and r.headers["cache-control"] == "no-cache"
+        head, d = decode_tile(r.content)
+        assert head["level"] == level and d["start"][-1] == head["nnz"]
+        for t in range(head["months"]):
+            ix = list(d["idx"][d["start"][t]:d["start"][t + 1]])
+            assert ix == sorted(set(ix))
+        cell = head["cell"]
+        west = lambda i: -180 + (tx * {1: 500, 2: 200, 3: 100}[level] + (i % 100) * round(cell / 0.05)) * 0.05
+        south = lambda i: -90 + (ty * {1: 500, 2: 200, 3: 100}[level] + (i // 100) * round(cell / 0.05)) * 0.05
+        keep = [k for k, i in enumerate(d["idx"]) if box[0] - 1e-6 <= west(i) < box[2] and box[1] - 1e-6 <= south(i) < box[3]]
+        tot[level] = (sum(d["harm"][k] for k in keep) / head["scale"], len(keep) * 0.5 / head["scale"])
+        if level == 3:   # one month of the finest tile against the parquet
+            t = max(range(head["months"]), key=lambda t: sum(d["harm"][d["start"][t]:d["start"][t + 1]]))
+            got = sum(d["harm"][d["start"][t]:d["start"][t + 1]]) / head["scale"]
+            y, m = divmod(t + 10, 12)
+            want = duckdb.connect().execute(f"""SELECT sum(harm) FROM read_parquet('{(HERE / 'data/mx/serve/monthly.parquet').as_posix()}')
+                WHERE month = DATE '{2000 + y}-{m + 1:02d}-01' AND cell_x BETWEEN {tx * 100 - 3600} AND {tx * 100 - 3501}
+                AND cell_y BETWEEN {ty * 100 - 1800} AND {ty * 100 - 1701}""").fetchone()[0]
+            n = d["start"][t + 1] - d["start"][t]
+            assert got == pytest.approx(want, abs=n * 0.5 / head["scale"] + 1e-6)
+    assert tot[1][0] == pytest.approx(tot[3][0], abs=tot[1][1] + tot[3][1]) and tot[2][0] == pytest.approx(tot[3][0], abs=tot[2][1] + tot[3][1])
+    assert c.get("/api/tiles/3/0/0").status_code == 204 and c.get("/api/tiles/3/0/0").status_code == 204
+    assert c.get("/api/tiles/4/0/0").status_code == 422 and c.get("/api/tiles/1/99/0").status_code == 422
+    etag = r.headers["etag"]
+    assert c.get("/api/tiles/3/16/22", headers={"if-none-match": etag}).status_code == 304
+
+
+def test_points_bin(client):
+    import gzip, json, struct
+    from array import array
+    c, _ = client
+    r = c.get("/api/live/points.bin")
+    assert r.status_code == 200 and r.headers["content-encoding"] == "gzip"
+    blob = r.content
+    nh = struct.unpack("<I", blob[:4])[0]
+    head, pos = json.loads(blob[4:4 + nh]), 4 + nh + (-(4 + nh) % 4)
+    n = head["n"]
+    js = c.get("/api/live/points", params={"country": "World"}).json()["points"]
+    assert n == len(js) == len(ROWS) - 1 and head["days"] >= 5 and head["buckets"] >= 3
+    cols = {}
+    for name, code, size in (("lon", "f", 4), ("lat", "f", 4), ("frp", "f", 4), ("min", "H", 2), ("day", "B", 1), ("flag", "B", 1), ("dburn", "B", 1)):
+        cols[name] = array(code, blob[pos:pos + n * size])
+        pos += n * size + (-(n * size) % 4)
+    ids = array("I", blob[pos:pos + 4 * head["buckets"]])
+    starts = array("I", blob[pos + 4 * head["buckets"]:pos + 4 * (2 * head["buckets"] + 1)])
+    assert list(ids) == sorted(set(ids)) and starts[0] == 0 and starts[-1] == n and list(starts) == sorted(starts)
+    for b, i in enumerate(ids):
+        for k in range(starts[b], starts[b + 1]):
+            assert int((cols["lat"][k] + 90) // 0.5) * 720 + int((cols["lon"][k] + 180) // 0.5) == i
+    first = __import__("datetime").date.fromisoformat(head["first_day"])
+    for k in range(n):
+        p = next(p for p in js if abs(p[0] - cols["lon"][k]) < 1e-3 and abs(p[1] - cols["lat"][k]) < 1e-3 and p[4] == pytest.approx(cols["frp"][k], abs=0.06)
+                 and p[2] == (first + __import__("datetime").timedelta(days=cols["day"][k])).isoformat())
+        assert p[3] == f"{cols['min'][k] // 60:02d}:{cols['min'][k] % 60:02d}" and p[5] == ("N" if cols["flag"][k] else "D")
+        assert p[6] == cols["dburn"][k]

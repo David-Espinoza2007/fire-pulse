@@ -185,8 +185,6 @@ const rowStart = (() => {
   for(let r=0;r<=NROW;r++){ while(u < U && Math.floor(cellId[u]/NCOL) < r) u++; a[r] = u; }
   return a;
 })();
-const sx = new Float32Array(U), sy = new Float32Array(U), sr = new Float32Array(U), sv = new Float32Array(U);
-const sb = new Uint8Array(U), drawn = new Int32Array(U); let nDrawn = 0;
 let qX = new Float32Array(0), qY = new Float32Array(0), qI = new Int32Array(0), nQ = 0, qSide = 0, l1Shown = null;   // level 1 on screen, for hover
 const NB = 12;
 const tiles = SAT.tiles.map(t => ({t, shape:d3.geoGraticule().extentMajor([[t.t20x*20, t.t20y*20], [t.t20x*20 + 20, t.t20y*20 + 20]]).outline(),
@@ -319,36 +317,54 @@ function forVisible(vb, fn){   // flat view: only the rows and columns in view
   }
 }
 const inBox = (b, lon, lat) => b && lon >= b[0] && lon <= b[2] && lat >= b[1] && lat <= b[3];
-function drawCells0(g, vb, skip, a, moving){
-  const k = PC.k, t = state.t, count = state.view !== 'anom', zs = 0.75 + 0.3*(k/S0), foot = 0.55*k*RES*RAD;
-  const med = count ? null : cellMedians(monOf(t)), rd = reader();
-  forVisible(vb, u => {
-    const v = rd(u*T + t);
-    if(count ? v < 1 : (v < 3 && med[u] < 3)) return;
-    if(skip && inBox(skip, lonD[u], latD[u])) return;
-    if(!projU(ux[u], uy[u], uz[u], 16)) return;
-    if(count){
-      const q = Math.sqrt(Math.min(1, v/VMAX));
-      sb[u] = Math.min(NB-1, Math.floor(q*NB)); sr[u] = clamp(Math.max(foot, (0.7 + 2.5*q)*zs), 0.8, 14); sv[u] = v;
-    } else {
-      const ratio = (v + 1)/(med[u] + 1), w = Math.sqrt(Math.min(1, Math.max(v, med[u])/VMAX));
-      sb[u] = Math.min(NB-1, Math.floor(anomU(ratio)*NB)); sr[u] = clamp(Math.max(foot, (1.1 + 2.6*w)*zs), 0.8, 14); sv[u] = ratio;
-    }
-    sx[u] = PX[0]; sy[u] = PX[1]; drawn[nDrawn++] = u;
-  });
+/* squares of every level are collected per frame, then filled with one path per colour bucket; the list also serves hover */
+const SQ = {n:0, x:new Float32Array(1 << 16), y:new Float32Array(1 << 16), s:new Float32Array(1 << 16), v:new Float32Array(1 << 16),
+            b:new Uint8Array(1 << 16), l:new Uint8Array(1 << 16), u:new Int32Array(1 << 16)};
+let sqOrder = new Int32Array(1 << 16);
+const sqCount = new Int32Array(NB + 1);
+function sqPush(x, y, s, b, v, l, u){
+  if(SQ.n === SQ.x.length){
+    for(const k of ['x', 'y', 's', 'v', 'b', 'l', 'u']){ const a = new SQ[k].constructor(SQ[k].length*2); a.set(SQ[k]); SQ[k] = a; }
+    sqOrder = new Int32Array(SQ.x.length);
+  }
+  const i = SQ.n++; SQ.x[i] = x; SQ.y[i] = y; SQ.s[i] = s; SQ.b[i] = b; SQ.v[i] = v; SQ.l[i] = l; SQ.u[i] = u;
+}
+function sqFlush(g, from, to, count, a, glow){   // counting sort by bucket, then one path per bucket
+  if(to <= from || a <= 0) return;
+  sqCount.fill(0);
+  for(let i=from;i<to;i++) sqCount[SQ.b[i] + 1]++;
+  for(let b=0;b<NB;b++) sqCount[b + 1] += sqCount[b];
+  const pos = sqCount.slice(0, NB);
+  for(let i=from;i<to;i++) sqOrder[pos[SQ.b[i]]++] = i;
   g.globalCompositeOperation = count ? 'lighter' : 'source-over';
   for(let b=0;b<NB;b++){
-    const q = (b + .5)/NB;
-    g.fillStyle = count ? lut(seqLUT, 0.2 + 0.7*q) : lut(divLUT, q);
-    if(count && !moving){   // soft halo, skipped while the map moves
+    const j0 = sqCount[b], j1 = sqCount[b + 1]; if(j0 === j1) continue;
+    const q = (b + .5)/NB; g.fillStyle = count ? lut(seqLUT, 0.2 + 0.7*q) : lut(divLUT, q);
+    if(glow){   // one soft glow, only on the round globe while it is still
       g.globalAlpha = (0.3 + 0.7*q)*0.1*a; g.beginPath();
-      for(let i=0;i<nDrawn;i++){ const u = drawn[i]; if(sb[u] !== b) continue; const r = sr[u]*2.2; g.moveTo(sx[u] + r, sy[u]); g.arc(sx[u], sy[u], r, 0, 7); }
+      for(let j=j0;j<j1;j++){ const i = sqOrder[j], r = SQ.s[i]*1.8; g.moveTo(SQ.x[i] + r, SQ.y[i]); g.arc(SQ.x[i], SQ.y[i], r, 0, 7); }
       g.fill();
     }
     g.globalAlpha = (count ? 0.3 + 0.45*q : 0.8)*a; g.beginPath();
-    for(let i=0;i<nDrawn;i++){ const u = drawn[i]; if(sb[u] !== b) continue; const r = sr[u]; g.moveTo(sx[u] + r, sy[u]); g.arc(sx[u], sy[u], r, 0, 7); }
+    for(let j=j0;j<j1;j++){ const i = sqOrder[j], s = SQ.s[i], h = s/2; g.rect(SQ.x[i] - h, SQ.y[i] - h, s, s); }
     g.fill();
   }
+  g.globalAlpha = 1;
+}
+// level 0: the 0.5 degree cells as squares of their footprint, limited to the box when one is given
+function cells0(vb, box){
+  const k = PC.k, t = state.t, count = state.view !== 'anom', side = Math.max(1.5, k*RES*RAD);
+  const area = box ? (vb ? [Math.max(vb[0], box[0]), Math.max(vb[1], box[1]), Math.min(vb[2], box[2]), Math.min(vb[3], box[3])] : box) : vb;
+  if(area && (area[0] >= area[2] || area[1] >= area[3])) return;
+  const med = count ? null : cellMedians(monOf(t)), rd = reader();
+  forVisible(area, u => {
+    if(box && !(lonD[u] > box[0] && lonD[u] < box[2] && latD[u] > box[1] && latD[u] < box[3])) return;
+    const v = rd(u*T + t);
+    if(count ? v < 1 : (v < 3 && med[u] < 3)) return;
+    if(!projU(ux[u], uy[u], uz[u], side)) return;
+    if(count) sqPush(PX[0], PX[1], side, Math.min(NB-1, Math.floor(Math.sqrt(Math.min(1, v/VMAX))*NB)), v, 0, u);
+    else { const r = (v + 1)/(med[u] + 1); sqPush(PX[0], PX[1], side, Math.min(NB-1, Math.floor(anomU(r)*NB)), r, 0, u); }
+  });
 }
 function drawLive0(g, cells, skip, a, moving){   // the last 7 days on 0.5 degree cells
   const k = PC.k, zs = 0.75 + 0.3*(k/S0), foot = 0.55*k*RES*RAD;
@@ -376,10 +392,10 @@ function l1Spec(){
   const vb = viewBox(); if(!vb) return null;
   const base = l1Base(), key = base + '|' + vb.join(',');
   if(state.live){
-    if(!HAS.live || ptsOff) return null;
+    if(!HAS.live || ptsOff || !pbOff) return null;   // the week file does this better when it is there
     return {base, key, vb, url:'api/live/points?' + new URLSearchParams({bbox:vb.join(','), ...lParam(), strong:state.strong ? 1 : 0})};
   }
-  if(state.view === 'trust' || cellsOff || vb[2] - vb[0] > 70 || vb[3] - vb[1] > 45) return null;   // the API refuses larger boxes
+  if(!tilesOff || state.view === 'trust' || cellsOff || vb[2] - vb[0] > 70 || vb[3] - vb[1] > 45) return null;   // the API refuses larger boxes
   const anom = state.view === 'anom';
   return {base, key, vb, anom, harm:state.harm,
           url:'api/cells?' + new URLSearchParams({bbox:vb.join(','), month:ymOf(state.t), ...mParam(), normal:anom ? 1 : 0})};
@@ -451,20 +467,243 @@ function drawL1(g, d, a){
   }
   qSide = Math.max(6, h);
 }
+/* ---------- time tiles: every month of an area in one file, so any month draws without asking the server ----------
+   Level by footprint on screen: the finest level whose cell is at least 3 px (kept down to 2.6 px, so it does not flap). */
+const TL = {1:{cell:0.25, tf:500, f:5, n:25, km:25}, 2:{cell:0.1, tf:200, f:2, n:4, km:10}, 3:{cell:0.05, tf:100, f:1, n:1, km:5}};
+const TS = new Map();   // "level/tx/ty" -> {state: loading | ok | empty | err, data, bytes, at, used}
+let tsBytes = 0, tsFlight = 0, tilesOff = false, tileLv = 0, prefetch = null, tileWanted = [], tileStat = [0, 0];
+const TS_MAX = 250e6;
+function levelFor(k, hyst){
+  if(zoom < 1.8) return 0;
+  let best = 0; for(let L=3;L>=1;L--) if(TL[L].cell*RAD*k >= 3){ best = L; break; }
+  if(hyst && tileLv > best && TL[tileLv].cell*RAD*k >= 2.6) best = tileLv;
+  return best || 1;
+}
+const tileBox = (L, x, y) => { const s = TL[L].tf*0.05, w = -180 + x*s, so = -90 + y*s; return [w, so, w + s, so + s]; };
+function tilesIn(L, vb){   // tiles of level L over the box, nearest to the view centre first
+  if(!vb) return [];
+  const s = TL[L].tf*0.05, nx = Math.ceil(360/s), ny = Math.ceil(180/s), c = projection.invert([W/2, H/2]) || [0, 0];
+  const x0 = clamp(Math.floor((vb[0] + 180)/s), 0, nx - 1), x1 = clamp(Math.floor((vb[2] + 180)/s - 1e-9), 0, nx - 1);
+  const y0 = clamp(Math.floor((vb[1] + 90)/s), 0, ny - 1), y1 = clamp(Math.floor((vb[3] + 90)/s - 1e-9), 0, ny - 1), out = [];
+  for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){
+    const b = tileBox(L, x, y), dl = ((b[0] + s/2 - c[0] + 540) % 360) - 180, dp = b[1] + s/2 - c[1];
+    out.push({key:`${L}/${x}/${y}`, L, x, y, b, d:dl*dl + dp*dp});
+  }
+  return out.sort((p, q) => p.d - q.d);
+}
+const tileView = () => viewBounds(isFlat() ? 0.05 : 0.3);
+function wantNow(hyst){
+  if(tilesOff || state.live || state.view === 'trust') return [];
+  const L = levelFor(projection.scale(), hyst); return L ? tilesIn(L, tileView()) : [];
+}
+function decodeTile(buf, L, x, y){
+  const hl = new DataView(buf).getUint32(0, true), h = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl)));
+  let off = 4 + hl; off += (-off & 3);
+  const nT = h.months, n = h.nnz, mstart = new Uint32Array(buf, off, nT + 1); off += (nT + 1)*4;
+  const u16 = () => { const a = new Uint16Array(buf, off, n); off += n*2; off += (-off & 3); return a; };
+  const idx = u16(), harm = u16(), night = u16(), raw = u16();
+  const t = TL[L], b = tileBox(L, x, y), vx = new Float32Array(10000), vy = new Float32Array(10000), vz = new Float32Array(10000);
+  for(let r=0;r<100;r++) for(let c=0;c<100;c++){ const v = unitOf(b[0] + (c + .5)*t.cell, b[1] + (r + .5)*t.cell), i = r*100 + c; vx[i] = v[0]; vy[i] = v[1]; vz[i] = v[2]; }
+  return {nT, t0:tAt(h.first || '2000-11'), mstart, idx, harm, night, raw, scale:+h.scale || 1, hasNight:!!h.night, vx, vy, vz, norm:new Map()};
+}
+function startTile(it){
+  const ctl = new AbortController(), e = {state:'loading', ctl, bytes:0, used:0};
+  TS.set(it.key, e); tsFlight++;
+  fetch(`api/tiles/${it.L}/${it.x}/${it.y}`, {signal:ctl.signal})
+    .then(r => { if(r.status === 204) return null; if(!r.ok){ const x = new Error(r.status); x.status = r.status; throw x; } return r.arrayBuffer(); })
+    .then(buf => {
+      if(TS.get(it.key) !== e) return;
+      if(!buf || !buf.byteLength){ e.state = 'empty'; }
+      else { e.data = decodeTile(buf, it.L, it.x, it.y); e.state = 'ok'; e.bytes = buf.byteLength + 120000; tsBytes += e.bytes; evictTiles(); }
+      e.at = performance.now(); dirty = true;
+    })
+    .catch(err => {
+      if(err.name === 'AbortError' || TS.get(it.key) !== e) return;
+      if(err.status === 404){ tilesOff = true; for(const [k, q] of TS) if(q.state === 'loading') q.ctl.abort(); TS.clear(); tsBytes = 0; legend(); dirty = true; return; }   // no tile endpoint: the old path
+      e.state = 'err'; e.at = performance.now();
+    })
+    .finally(() => { tsFlight--; pumpTiles(); });
+}
+function evictTiles(){
+  while(tsBytes > TS_MAX){
+    let old = null, ok = null;
+    for(const [k, e] of TS) if(e.state === 'ok' && (!old || e.used < old.used)){ old = e; ok = k; }
+    if(!old || performance.now() - old.used < 200) return;   // never drop what is on screen
+    TS.delete(ok); tsBytes -= old.bytes;
+  }
+}
+function pumpTiles(){   // at most 6 requests, nearest first; requests for tiles that left the view are cancelled
+  if(tilesOff) return;
+  const list = (prefetch || []).concat(fly ? [] : tileWanted), keep = new Set(list.map(i => i.key)), now = performance.now();
+  for(const [k, e] of TS) if(e.state === 'loading' && !keep.has(k)){ e.ctl.abort(); TS.delete(k); }
+  for(const it of list){
+    if(tsFlight >= 6) break;
+    const e = TS.get(it.key);
+    if(e && e.state === 'err' && now - e.at > 10000) TS.delete(it.key);
+    if(!TS.has(it.key)) startTile(it);
+  }
+}
+function prefetchFly(lonR, latR, k1){   // the tiles of the destination, asked for as the fly starts
+  if(tilesOff || state.live || state.view === 'trust') return;
+  const r = projection.rotate(), z = zoom;
+  projection.rotate([lonR, latR]); setZoom(k1);
+  prefetch = wantNow(false);
+  projection.rotate(r); setZoom(z);
+  pumpTiles();
+}
+// normal of each cell for one calendar month and filter: median over the baseline years, a missing year counts as 0
+const tileVal = (d, i, filt) => filt === 'raw' ? d.raw[i] : filt === 'night' ? d.night[i]/d.scale : filt === 'day' ? Math.max(0, d.harm[i] - d.night[i])/d.scale : d.harm[i]/d.scale;
+function tileNormal(e, mo, filt){
+  const d = e.data, key = mo + filt; let r = d.norm.get(key); if(r) return r;
+  const ny = BASE.length, buf = new Float32Array(10000*ny), seen = new Uint8Array(10000), ids = [];
+  BASE.forEach((Y, yi) => { const t = tOf(Y, mo) - d.t0; if(t < 0 || t >= d.nT) return;
+    for(let i=d.mstart[t];i<d.mstart[t + 1];i++){ const id = d.idx[i]; buf[id*ny + yi] = tileVal(d, i, filt); if(!seen[id]){ seen[id] = 1; ids.push(id); } } });
+  const med = new Float32Array(10000), tmp = new Float32Array(ny), keep = [];
+  for(const id of ids){ for(let j=0;j<ny;j++) tmp[j] = buf[id*ny + j]; tmp.sort(); med[id] = (tmp[(ny - 1) >> 1] + tmp[ny >> 1])/2; if(med[id] > 0) keep.push(id); }
+  keep.sort((a, b) => a - b);
+  r = {med, ids:Int32Array.from(keep)}; d.norm.set(key, r); e.bytes += 40000 + keep.length*4; tsBytes += 40000 + keep.length*4;
+  return r;
+}
+const tCur = new Float32Array(10000), tMark = new Uint8Array(10000);
+function tileSquares(e, L, tb, box, vb){   // push the squares of one tile for the selected month, inside box and view
+  const d = e.data, t = state.t - d.t0; if(t < 0 || t >= d.nT) return;
+  const c = TL[L], f100 = 100/c.n, side = Math.max(1.2, PC.k*c.cell*RAD), anom = state.view === 'anom';
+  const filt = state.harm ? (mParam().time || 'all') : 'raw';
+  const w = Math.max(box[0], vb ? vb[0] : -180), e2 = Math.min(box[2], vb ? vb[2] : 180), s = Math.max(box[1], vb ? vb[1] : -90), n = Math.min(box[3], vb ? vb[3] : 90);
+  if(w >= e2 || s >= n) return;
+  const c0 = clamp(Math.floor((w - tb[0])/c.cell + 1e-6), 0, 99), c1 = clamp(Math.ceil((e2 - tb[0])/c.cell - 1e-6) - 1, 0, 99);
+  const r0 = clamp(Math.floor((s - tb[1])/c.cell + 1e-6), 0, 99), r1 = clamp(Math.ceil((n - tb[1])/c.cell - 1e-6) - 1, 0, 99);
+  let a = d.mstart[t], b = d.mstart[t + 1];
+  { let lo = a, hi = b; while(lo < hi){ const m = (lo + hi) >> 1; if(d.idx[m] < r0*100) lo = m + 1; else hi = m; } a = lo; }   // rows are sorted
+  const last = r1*100 + 99;
+  if(!anom){
+    for(let i=a;i<b;i++){
+      const id = d.idx[i]; if(id > last) break;
+      const col = id % 100; if(col < c0 || col > c1) continue;
+      const v = tileVal(d, i, filt); if(v*f100 < 1) continue;
+      if(!projU(d.vx[id], d.vy[id], d.vz[id], side)) continue;
+      sqPush(PX[0], PX[1], side, Math.min(NB-1, Math.floor(Math.sqrt(Math.min(1, v*f100/VMAX))*NB)), v, L, -1);
+    }
+    return;
+  }
+  const nm = tileNormal(e, monOf(state.t), filt), list = [];
+  for(let i=a;i<b;i++){ const id = d.idx[i]; if(id > last) break; const col = id % 100; if(col < c0 || col > c1) continue; tCur[id] = tileVal(d, i, filt); tMark[id] = 1; list.push(id); }
+  for(const id of nm.ids){ if(id < r0*100) continue; if(id > last) break; const col = id % 100; if(col < c0 || col > c1 || tMark[id]) continue; list.push(id); }
+  for(const id of list){
+    const v = tCur[id], m = nm.med[id]; tCur[id] = 0; tMark[id] = 0;
+    if(v*f100 < 3 && m*f100 < 3) continue;
+    if(!projU(d.vx[id], d.vy[id], d.vz[id], side)) continue;
+    const r = (v*f100 + 1)/(m*f100 + 1);
+    sqPush(PX[0], PX[1], side, Math.min(NB-1, Math.floor(anomU(r)*NB)), r, L, -1);
+  }
+}
+function fallbackSquares(L, box, vb){   // best data already in memory for a tile that is not here yet: a coarser tile, else level 0
+  for(let M=L-1;M>=1;M--){
+    const cover = tilesIn(M, box).filter(it => hits(it.b, box) && it.b[0] < box[2] && it.b[2] > box[0] && it.b[1] < box[3] && it.b[3] > box[1]);
+    if(cover.length && cover.every(it => { const e = TS.get(it.key); return e && (e.state === 'ok' || e.state === 'empty'); })){
+      for(const it of cover){ const e = TS.get(it.key); if(e.state === 'ok'){ e.used = performance.now(); tileSquares(e, M, it.b, box, vb); } }
+      return;
+    }
+  }
+  cells0(vb, box);
+}
+function drawTiles(g, L, now){
+  const vb = tileView(), vis = tilesIn(L, vb), count = state.view !== 'anom', fading = [];
+  let ok = 0;
+  const from = SQ.n;
+  for(const it of vis){
+    const e = TS.get(it.key);
+    if(e && e.state === 'empty'){ ok++; continue; }
+    if(e && e.state === 'ok'){
+      ok++; e.used = now;
+      const f = reduced ? 1 : clamp((now - e.at)/120, 0, 1);
+      if(f < 1){ fading.push([it, e, f]); continue; }
+      tileSquares(e, L, it.b, it.b, vb);
+    } else fallbackSquares(L, it.b, vb);
+  }
+  sqFlush(g, from, SQ.n, count, 1, false);
+  for(const [it, e, f] of fading){   // a new tile fades in over the data it replaces
+    let i0 = SQ.n; fallbackSquares(L, it.b, vb); sqFlush(g, i0, SQ.n, count, 1 - f, false);
+    i0 = SQ.n; tileSquares(e, L, it.b, it.b, vb); sqFlush(g, i0, SQ.n, count, f, false);
+    dirty = true;
+  }
+  tileStat = [ok, vis.length - ok];
+}
+
+/* ---------- the last 7 days as one binary file: single detections for the whole world, filtered in the page ---------- */
+let PB = null, pbOff = !HAS.live;
+function decodePB(buf){
+  const hl = new DataView(buf).getUint32(0, true), h = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl)));
+  let off = 4 + hl; off += (-off & 3);
+  const n = h.n, B = h.buckets, take = (Type, m) => { const a = new Type(buf, off, m); off += m*Type.BYTES_PER_ELEMENT; off += (-off & 3); return a; };
+  const lon = take(Float32Array, n), lat = take(Float32Array, n), frp = take(Float32Array, n), minute = take(Uint16Array, n);
+  const day = take(Uint8Array, n), flags = take(Uint8Array, n), burn = take(Uint8Array, n), ids = take(Uint32Array, B), starts = take(Uint32Array, B + 1);
+  const vx = new Float32Array(n), vy = new Float32Array(n), vz = new Float32Array(n);
+  for(let i=0;i<n;i++){ const v = unitOf(lon[i], lat[i]); vx[i] = v[0]; vy[i] = v[1]; vz[i] = v[2]; }
+  return {h, n, lon, lat, frp, minute, day, flags, burn, ids, starts, vx, vy, vz, first:new Date((h.first_day || h.from) + 'T00:00:00Z')};
+}
+function loadPB(){
+  if(pbOff) return;
+  fetch('api/live/points.bin').then(r => { if(!r.ok){ const x = new Error(r.status); x.status = r.status; throw x; } return r.arrayBuffer(); })
+    .then(buf => { PB = decodePB(buf); dirty = true; legend(); })
+    .catch(() => { pbOff = true; });   // keep the per-view request
+}
+const pbStrong = () => PB && PB.h.strong_mw != null ? +PB.h.strong_mw : strongMW();
+function drawPB(g){
+  const d = PB, vb = tileView(), smw = pbStrong() || 50, night = state.time === 'night', day = state.time === 'day', strong = state.strong;
+  if(qX.length < d.n){ qX = new Float32Array(d.n); qY = new Float32Array(d.n); qI = new Int32Array(d.n); }
+  const cls = new Uint8Array(d.n); nQ = 0; l1Shown = {kind:'pb'};
+  const visit = (a, b) => { for(let i=a;i<b;i++){
+    const isN = d.flags[i] & 1; if((night && !isN) || (day && isN)) continue;
+    const f = d.frp[i]; if(strong && !(f >= smw)) continue;
+    if(!projU(d.vx[i], d.vy[i], d.vz[i], 6)) continue;
+    cls[nQ] = f >= smw ? 2 : f >= smw/4 ? 1 : 0; qX[nQ] = PX[0]; qY[nQ] = PX[1]; qI[nQ++] = i; } };
+  if(!vb || vb[2] - vb[0] >= 359) visit(0, d.n);
+  else {   // only the 0.5 degree buckets in view
+    const r0 = clamp(Math.floor((vb[1] + 90)/0.5), 0, 359), r1 = clamp(Math.floor((vb[3] + 90)/0.5), 0, 359);
+    const c0 = clamp(Math.floor((vb[0] + 180)/0.5), 0, 719), c1 = clamp(Math.floor((vb[2] + 180)/0.5), 0, 719);
+    for(let r=r0;r<=r1;r++){
+      const lo0 = r*720 + c0, hi0 = r*720 + c1; let lo = 0, hi = d.ids.length;
+      while(lo < hi){ const m = (lo + hi) >> 1; if(d.ids[m] < lo0) lo = m + 1; else hi = m; }
+      for(let j=lo;j<d.ids.length && d.ids[j] <= hi0;j++) visit(d.starts[j], d.starts[j + 1]);
+    }
+  }
+  g.globalCompositeOperation = 'source-over';
+  for(let c=0;c<3;c++){
+    const r = [1.8, 2.5, 3.3][c]; g.globalAlpha = .9; g.fillStyle = PTC[c]; g.beginPath();
+    for(let j=0;j<nQ;j++){ if(cls[j] !== c) continue; g.moveTo(qX[j] + r, qY[j]); g.arc(qX[j], qY[j], r, 0, 7); }
+    g.fill();
+  }
+  qSide = 6;
+}
+
 function drawFire(g, moving, now){
-  nDrawn = 0; nQ = 0; l1Shown = null;
+  nQ = 0; l1Shown = null; SQ.n = 0;
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const flat = isFlat(), vb = flat ? viewBounds(0.1) : null;
-  // level 1 stays on screen while the map moves, as long as it is the same month, mode and filter; level 0 fills the rest
-  const L1 = flat && !playing && l1Cur && l1Cur.base === l1Base() && (state.live || state.view !== 'trust') ? l1Cur : null;
-  const f = !L1 ? 0 : reduced || !L1.shownAt ? 1 : clamp((now - L1.shownAt)/200, 0, 1);
-  if(L1 && f < 1) dirty = true;
-  const skip = L1 && f >= 1 ? L1.vb : null, a0 = L1 && f < 1 ? 1 - f : 1;   // after the fade, level 0 only outside the level 1 box
-  if(state.live){ const cells = liveCells.get(state.time); if(cells && a0 > 0) drawLive0(g, cells, skip, a0, moving); }
-  else if(state.view !== 'trust' && a0 > 0) drawCells0(g, vb, skip, a0, moving);
-  if(L1) drawL1(g, L1, f);
+  const flat = isFlat(), vb = flat ? viewBounds(0.1) : null, glow = alpha < 0.5 && !moving;
+  let lv = 0;
+  if(state.live && PB && zoom >= 1.8){ drawPB(g); lv = 4; }
+  else if(!state.live && state.view !== 'trust' && !tilesOff){
+    lv = tileLv = levelFor(PC.k, true);
+    if(lv === 0){ cells0(vb, null); sqFlush(g, 0, SQ.n, state.view !== 'anom', 1, glow); tileStat = [0, 0]; }
+    else drawTiles(g, lv, now);
+  } else {
+    // without tiles or the week file: level 0, and the per-view level 1 once the view has settled (as before)
+    const L1 = flat && !playing && l1Cur && l1Cur.base === l1Base() && (state.live || state.view !== 'trust') ? l1Cur : null;
+    const f = !L1 ? 0 : reduced || !L1.shownAt ? 1 : clamp((now - L1.shownAt)/200, 0, 1);
+    if(L1 && f < 1) dirty = true;
+    const skip = L1 && f >= 1 ? L1.vb : null, a0 = L1 && f < 1 ? 1 - f : 1;   // after the fade, level 0 only outside the level 1 box
+    if(state.live){ const cells = liveCells.get(state.time); if(cells && a0 > 0) drawLive0(g, cells, skip, a0, moving); }
+    else if(state.view !== 'trust' && a0 > 0){
+      cells0(vb, null);
+      if(skip){ let j = 0; for(let i=0;i<SQ.n;i++){ const u = SQ.u[i]; if(inBox(skip, lonD[u], latD[u])) continue;   // drop squares under level 1
+        if(j !== i) for(const k of ['x', 'y', 's', 'v', 'b', 'l', 'u']) SQ[k][j] = SQ[k][i]; j++; } SQ.n = j; }
+      sqFlush(g, 0, SQ.n, state.view !== 'anom', a0, glow);
+    }
+    if(L1){ drawL1(g, L1, f); lv = L1.kind === 'p' ? 4 : 3; }
+  }
   g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
-  const lv = L1 ? 1 : 0; if(lv !== fireLevel){ fireLevel = lv; legend(); }
+  if(lv !== fireLevel){ fireLevel = lv; legend(); }
 }
 
 /* ---------- one frame ---------- */
@@ -499,7 +738,8 @@ function draw(now = performance.now()){
   frameMs.push(performance.now() - t0); if(frameMs.length > 60) frameMs.shift();
   if(perfBox && ++perfN % 10 === 0){
     const s = frameMs.slice().sort((a, b) => a - b);
-    perfBox.textContent = `median ${s[s.length >> 1].toFixed(1)} ms, worst ${s.at(-1).toFixed(1)} ms\nbase: ${baseMode}, fire level ${fireLevel}`;
+    perfBox.textContent = `median ${s[s.length >> 1].toFixed(1)} ms, worst ${s.at(-1).toFixed(1)} ms\nbase: ${baseMode}, fire level ${fireLevel === 4 ? 'dots' : fireLevel}
+tiles ${tileStat[0]} loaded, ${tileStat[1]} waiting, ${tsFlight} in flight, ${(tsBytes/1e6).toFixed(0)} MB`;
   }
 }
 
@@ -507,6 +747,7 @@ function flyTo(lon, lat, k1){
   const r = projection.rotate();
   if(reduced){ projection.rotate([lon, lat]); setZoom(k1); dirty = true; return; }
   fly = {t0:performance.now(), dur:1700, l0:r[0], dl:((lon - r[0] + 540) % 360) - 180, p0:r[1], p1:lat, k0:zoom, k1};
+  prefetchFly(lon, lat, k1);
 }
 // centre and angular radius of a set of [lon, lat] points, to frame them
 function frame(pts){
@@ -526,14 +767,14 @@ function anchor(ll, x, y){   // turn the map so the place ll sits under the scre
   }
 }
 
-let last = 0, playing = false, playAcc = 0, lastCheck = 0;
+let last = 0, playing = false, playAcc = 0, lastCheck = 0, lastTileReq = 0;
 function tick(now){
   const dt = Math.min(100, now - last); last = now;
   if(fly){
     const u = Math.min(1, (now - fly.t0)/fly.dur), e = d3.easeCubicInOut(u);
     projection.rotate([fly.l0 + fly.dl*e, fly.p0 + (fly.p1 - fly.p0)*e]);
     setZoom(fly.k0 * Math.pow(fly.k1/fly.k0, e));
-    if(u >= 1) fly = null; dirty = true;
+    if(u >= 1){ fly = null; prefetch = null; } dirty = true;
   } else if(spin && !dragging && !drawMode){
     const r = projection.rotate(); projection.rotate([r[0] + dt*0.004, r[1]]); dirty = true;
   }
@@ -543,6 +784,7 @@ function tick(now){
   wasMoving = mv;
   const flat = isFlat(); if(flat !== wasFlat){ wasFlat = flat; legend(); howto(); }
   if(!mv && now - lastMove >= 150 && now - lastCheck > 100){ lastCheck = now; viewCheck(); }   // the view has settled
+  if(now - lastTileReq > 100){ lastTileReq = now; tileWanted = fly ? [] : wantNow(true); pumpTiles(); }   // tiles do not wait for the view to settle
   if(dirty){ dirty = false; draw(now); }
   requestAnimationFrame(tick);
 }
@@ -622,7 +864,9 @@ cv.addEventListener('pointermove', e => {
     for(let j=0;j<nQ;j++){ const d = (qX[j]-x)**2 + (qY[j]-y)**2; if(d < bd){ bd = d; best = qI[j]; } }
     if(best >= 0){
       const d = l1Shown;
-      if(d.kind === 'p'){ const p = d.pts[best], smw = strongMW();
+      if(d.kind === 'pb'){ const P = PB, smw = pbStrong(), dt = new Date(P.first.getTime() + P.day[best]*864e5), mi = P.minute[best];
+        showTip(`${dt.getUTCDate()} ${MON[dt.getUTCMonth()]}, ${String(mi/60 | 0).padStart(2, '0')}:${String(mi%60).padStart(2, '0')} local time${P.flags[best] & 1 ? ' (night)' : ''}\n${smw != null && P.frp[best] >= smw ? 'Strong fire. ' : ''}Burning ${P.burn[best]} of ${Math.max(+P.h.days || 7, P.burn[best])} days here`, e.clientX, e.clientY); }
+      else if(d.kind === 'p'){ const p = d.pts[best], smw = strongMW();
         showTip(`${dShort(p[2])}, ${p[3]} local time${p[5] === 'N' ? ' (night)' : ''}\n${smw != null && p[4] >= smw ? 'Strong fire. ' : ''}Burning ${p[6]} of ${Math.max(d.days, p[6])} days here`, e.clientX, e.clientY); }
       else { const v = d.v[best];
         showTip(d.anom ? `${name}${ratioText(v, `${MONTHS[m]} in this square`)}`
@@ -630,12 +874,12 @@ cv.addEventListener('pointermove', e => {
       return;
     }
   }
-  let best = -1, bd = 100;
-  for(let i=0;i<nDrawn;i++){ const u = drawn[i], d = (sx[u]-x)**2 + (sy[u]-y)**2; if(d < bd){ bd = d; best = u; } }
+  let best = -1, bd = Infinity;   // squares of any level: the one under the cursor, or the nearest within 6 px
+  for(let i=0;i<SQ.n;i++){ const h = Math.max(SQ.s[i]/2, 6), dx = Math.abs(SQ.x[i] - x), dy = Math.abs(SQ.y[i] - y); if(dx > h || dy > h) continue; const dd = dx*dx + dy*dy; if(dd < bd){ bd = dd; best = i; } }
   if(best < 0){ if(st && !drawMode) showTip(`${st.name}\nClick to choose this area`, e.clientX, e.clientY); else tip.hidden = true; return; }
-  const nm = name || (ctry[best] === NONE ? '' : COUNTRIES[ctry[best]] + '\n');
-  showTip(state.view === 'count' ? `${nm}${fmt(sv[best])} fire detections${state.harm ? ' (adjusted)' : ''} in this square of about 50 km, ${MON[m]} ${yr}`
-                                 : `${nm}${ratioText(sv[best], `${MONTHS[m]} in this square`)}`, e.clientX, e.clientY);
+  const u = SQ.u[best], v = SQ.v[best], km = [50, 25, 10, 5][SQ.l[best]], nm = name || (u >= 0 && ctry[u] !== NONE ? COUNTRIES[ctry[u]] + '\n' : '');
+  showTip(state.view === 'count' ? `${nm}${v < 10 && SQ.l[best] ? +v.toFixed(1) : fmt(v)} fire detections${state.harm ? ' (adjusted)' : ''} in this square of about ${km} km, ${MON[m]} ${yr}`
+                                 : `${nm}${ratioText(v, `${MONTHS[m]} in this square`)}`, e.clientX, e.clientY);
 });
 cv.addEventListener('pointerup', e => {
   const [x, y] = local(e);
@@ -1103,10 +1347,10 @@ function setLive(on){
   if(on && !liveCells.has(state.time)) loadCells();
 }
 function legend(){
-  const tm = state.live || gTime() !== 'all' ? {all:'', day:'day ', night:'night '}[state.time] : '', sq = fireLevel ? 5 : 50;
+  const tm = state.live || gTime() !== 'all' ? {all:'', day:'day ', night:'night '}[state.time] : '', sq = [50, 25, 10, 5, 5][fireLevel] || 50;
   $('legend').innerHTML = state.view === 'trust' && !state.live
     ? 'How far off the adjusted numbers were in test years: ' + TRUST.map(s => `<span class="lstep"><span class="box" style="background:${s[1]}"></span>${s[2]}</span>`).join('')
-    : state.live && fireLevel ? `Each dot is one ${tm}fire detection in the last 7 days: ` + ['weak', 'medium', 'strong'].map((w, i) => `<span class="lstep"><span class="dotk" style="background:${PTC[i]}"></span>${w}</span>`).join('')
+    : state.live && fireLevel === 4 ? `Each dot is one ${tm}fire detection in the last 7 days: ` + ['weak', 'medium', 'strong'].map((w, i) => `<span class="lstep"><span class="dotk" style="background:${PTC[i]}"></span>${w}</span>`).join('')
     : state.live ? `<span>Fewer</span><span class="ramp seq"></span><span>More ${tm}fire detections in the last 7 days, per square of about 50 km</span>`
     : state.view === 'anom' ? `<span>Lower than normal</span><span class="ramp div"></span><span>Higher than normal for ${MONTHS[monOf(state.t)]}, per square of about ${sq} km</span>`
     : `<span>Fewer</span><span class="ramp seq"></span><span>More ${tm}${unitWord()} per square of about ${sq} km</span>`;
@@ -1337,7 +1581,7 @@ addEventListener('hashchange', () => { if(location.hash !== ownHash) restore(); 
 
 $('wLive').hidden = !HAS.live;
 $('strongWrap').hidden = !HAS.live;
-buildAbout(); syncTimeControls(); legend();
+buildAbout(); syncTimeControls(); legend(); loadPB();
 resize(); setPlaying(false); renderTime();
 requestAnimationFrame(tick);
 if(!(await restore())) select({kind:'world', name:'Earth'}, null).then(() => { spin = !reduced; });

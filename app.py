@@ -5,6 +5,7 @@
 Reads the tables that pipeline.py wrote under data/world (or data/mx, or $FIRE_DATA).
 """
 import csv
+import gzip
 import datetime
 import io
 import json
@@ -12,17 +13,21 @@ import calendar as cal
 import math
 import os
 import re
+import struct
 import threading
 import time
 import urllib.request
 from pathlib import Path
 
 import duckdb
-from fastapi import Body, FastAPI, HTTPException, Query
+from array import array
+
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 import harmonize as H
+import tiles as T
 
 HERE = Path(__file__).parent
 ROOT = Path(os.environ.get("FIRE_DATA") or next(
@@ -114,7 +119,7 @@ def load_live():
                       FROM {src} WHERE satellite = 'N20' AND {H.CLEAN}) GROUP BY 1, 2) y USING (cell_x, cell_y)""")
             strong = cur.execute("SELECT round(quantile_cont(frp, 0.9)) FROM live_det").fetchone()[0]
             first, last = cur.execute("SELECT min(acq_date), max(acq_date) FROM live_raw").fetchone()
-            live_state.update(loaded=time.time(), strong_mw=strong or 0, masked=STATIC_FILE.exists(), **{"from": first.isoformat(), "to": last.isoformat()})
+            live_state.update(loaded=time.time(), bin=None, strong_mw=strong or 0, masked=STATIC_FILE.exists(), **{"from": first.isoformat(), "to": last.isoformat()})
     return {"from": live_state["from"], "to": live_state["to"]}
 
 app = FastAPI(title="Fire calendar")
@@ -314,6 +319,63 @@ def live_points(country, bbox, polygon, time, strong):
     rows = run(f"""SELECT round(lon, 4), round(lat, 4), CAST(d AS VARCHAR), t, round(frp, 1), daynight, days FROM {src}
                    ORDER BY frp DESC NULLS LAST LIMIT {MAX_POINTS + 1}""", params, polygon).fetchall()
     return {"from": state["from"], "to": state["to"], "truncated": len(rows) > MAX_POINTS, "points": [list(r) for r in rows[:MAX_POINTS]]}
+
+
+def pack_points():
+    """Every detection of the last 7 days as one gzip file, sorted by 0.5 degree bucket.
+
+    Little-endian, every block padded to a multiple of 4 bytes: uint32 N and N bytes of JSON
+    {n, from, to, first_day, days, strong_mw, buckets}; Float32[n] lon, lat, frp (MW); Uint16[n] minute of the
+    local solar day; Uint8[n] day (local date minus first_day); Uint8[n] flags (bit 0 = night); Uint8[n] days
+    burning; Uint32[buckets] bucket ids (row * 720 + column) and Uint32[buckets + 1] starts into the points."""
+    rows = db.cursor().execute("SELECT lon, lat, coalesce(frp, 0), t, d, daynight, days FROM live_det").fetchall()
+    keyed = sorted(((math.floor((r[1] + 90) / 0.5) * 720 + math.floor((r[0] + 180) / 0.5), r) for r in rows), key=lambda k: k[0])
+    ids, starts = [], []
+    for i, (b, _) in enumerate(keyed):
+        if not ids or ids[-1] != b:
+            ids.append(b)
+            starts.append(i)
+    starts.append(len(keyed))
+    pts = [r for _, r in keyed]
+    first = min((r[4] for r in pts), default=None)
+    head = json.dumps({"n": len(pts), "from": live_state["from"], "to": live_state["to"], "first_day": first.isoformat() if first else live_state["from"],
+                       "days": len({r[4] for r in pts}), "strong_mw": live_state["strong_mw"], "buckets": len(ids)}).encode()
+    arr = lambda code, v: array(code, v).tobytes()   # little-endian machines only, like the page
+    parts = [T._pad(struct.pack("<I", len(head)) + head), arr("f", [r[0] for r in pts]), arr("f", [r[1] for r in pts]), arr("f", [r[2] for r in pts]),
+             T._pad(arr("H", [int(r[3][:2]) * 60 + int(r[3][3:]) for r in pts])),
+             T._pad(arr("B", [(r[4] - first).days for r in pts])), T._pad(arr("B", [r[5] == "N" for r in pts])),
+             T._pad(arr("B", [min(r[6], 255) for r in pts])), arr("I", ids), arr("I", starts)]
+    return gzip.compress(b"".join(parts), 6, mtime=0)
+
+
+def bin_response(request, data, etag):
+    heads = {"Content-Encoding": "gzip", "Cache-Control": "no-cache", "ETag": etag}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=heads)
+    return Response(data, media_type="application/octet-stream", headers=heads)
+
+
+@app.get("/api/live/points.bin")
+def live_points_bin(request: Request):
+    """All detections of the last 7 days in one binary file; the page filters and draws them locally."""
+    load_live()
+    with live_lock:
+        if live_state["bin"] is None:
+            live_state["bin"] = pack_points()
+        data = live_state["bin"]
+    return bin_response(request, data, f'"live-{live_state["loaded"]:.0f}-{len(data)}"')
+
+
+@app.get("/api/tiles/{level}/{tx}/{ty}")
+def tile(request: Request, level: int, tx: int, ty: int):
+    """One map tile with every month (layout in tiles.py), built on first request and cached on disk."""
+    if level not in T.LEVELS or not (0 <= tx < -(-7200 // T.LEVELS[level][1])) or not (0 <= ty < -(-3600 // T.LEVELS[level][1])):
+        raise HTTPException(422, "level must be 1, 2 or 3 and tx, ty inside the world")
+    path = T.ensure(ROOT / "serve", level, tx, ty)
+    if not path:
+        return Response(status_code=204)
+    st = path.stat()
+    return bin_response(request, path.read_bytes(), f'"{st.st_mtime_ns:x}-{st.st_size:x}"')
 
 
 @app.get("/api/live/points")

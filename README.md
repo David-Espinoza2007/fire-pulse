@@ -17,7 +17,7 @@ python -m venv .venv
 
 Open http://localhost:8000. Without world data the app reads `data/mx` (Mexico only), so the
 globe glows only over Mexico. The "last 7 days" layer downloads one public FIRMS file (35 MB) on
-first use. Run the tests with `.venv/Scripts/python -m pytest -q` (22 tests).
+first use. Run the tests with `.venv/Scripts/python -m pytest -q` (24 tests).
 
 Add `?perf=1` to the address to see frame times on the map.
 
@@ -82,6 +82,25 @@ picks a data folder explicitly.
 Not in the repository (too large): `data/zips`, `data/world`, and the Mexico hotspot archive
 (`data/mx/hotspots`, needed only for "Download detections").
 
+## How the map stays detailed
+
+The map draws squares of about 50, 25, 10 or 5 km, chosen so that a square is always 3 to 8
+pixels wide. The three finer sizes come as map tiles of 100 by 100 cells. Each tile holds every
+month since November 2000 for its area, so the page can move the timeline or play it without
+asking the server again. Tiles load while the map moves; until a tile arrives, the page draws the
+coarser data it already has. The page keeps up to 250 MB of tiles in memory.
+
+The server builds a tile on first request (under a second) and keeps it in `serve/tiles`. To build
+all of them in advance (about 3 minutes and 230 MB for the world):
+
+```bash
+.venv/Scripts/python tiles.py --root data/world --level 1    # then --level 2 and --level 3
+```
+
+The grid stops at 5 km on purpose. A MODIS pixel is 1 km below the satellite but about 2 by 5 km at
+the edge of the scan, and the method must find the same fire in the same cell for both sensors.
+The last 7 days are different: every detection is drawn at its own position.
+
 ## Files
 
 - `harmonize.py` - the method, as DuckDB SQL: grid, conversion tables, calibration, ratios.
@@ -89,9 +108,11 @@ Not in the repository (too large): `data/zips`, `data/world`, and the Mexico hot
   mask of permanent heat sources.
 - `reference.py` - downloads Natural Earth states and populated places for the map and place labels.
 - `app.py` - FastAPI. Main endpoints: `/api/calendar` (monthly record for a country, box or
-  polygon, with day/night filter), `/api/cells` (5 km grid for the visible map), `/api/live*`
-  (last 7 days: totals, single detections, "where to look first"), `/api/states`, `/api/places`,
-  `/api/validation`, `/api/hotspots.csv`, `/api/globe.bin`.
+  polygon, with day/night filter), `/api/tiles/{level}/{tx}/{ty}` (map tiles with all months),
+  `/api/live*` (last 7 days: totals, "where to look first", and `/api/live/points.bin` with every
+  detection of the week), `/api/states`, `/api/places`, `/api/validation`, `/api/hotspots.csv`,
+  `/api/globe.bin` (the 50 km grid for the whole globe).
+- `tiles.py` - builds the map tiles (binary layout in its first lines).
 - `static/` - the page: `index.html`, `style.css`, `app.js`, `vendor/` (D3, topojson-client,
   country shapes). A canvas globe that turns into a flat map when you zoom in.
 - `test_harmonize.py`, `test_api.py` - a synthetic record with a known answer, invariants of the

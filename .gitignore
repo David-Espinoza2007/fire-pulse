@@ -8,5 +8,6 @@ data/*
 !data/mx/
 data/mx/*
 !data/mx/serve/
+data/mx/serve/tiles/
 !data/reference/
 data/reference/raw/
