@@ -904,7 +904,8 @@ function drawPB(g){
 }
 
 /* ---------- a past month at the closest zoom: its single detections, asked for by view (layout in app.py, /api/points.bin) ---------- */
-let MP = null, mpWant = '', mpCtl = null, mpBusy = '', mpOff = !HAS.points;
+let MP = null, mpWant = '', mpBusy = '', mpHold = 0, mpOff = !HAS.points;
+const mpDays = new Map(), mpAsk = new Map();   // the last 12 days loaded and the requests in flight, by month|day|box
 const mpOn = () => !mpOff && !playing && isFlat() && PC.k*0.05*RAD >= 12;   // a square of 5 km is at least 12 px wide
 const dayOn = () => state.day > 0 && !state.live && !mpOff;   // one day of the record: its raw detections at every zoom
 const mpReady = () => MP && MP.m === ymOf(state.t) && MP.d === (dayOn() ? state.day : 0);
@@ -912,15 +913,12 @@ const dayBox = () => { const vb = isFlat() && tileView(); return vb && vb[2] - v
 const daySpan = () => { if(!mpReady()) return 'Loading the detections…';
   const where = MP.box[2] - MP.box[0] >= 359 ? 'in the world' : 'in this view';   // a wide view asks for the whole world
   return MP.h.truncated ? `Strongest ${fmt(MP.n)} detections ${where} shown, as reported` : `${fmt(MP.n)} detections ${where}, as reported`; };
-function loadMP(vb){   // on still frames: one request for the view and a margin, kept until the view leaves it or the month (or day) changes
-  const m = ymOf(state.t), dd = dayOn() ? state.day : 0;
-  if(!vb || (mpReady() && vb[0] >= MP.box[0] && vb[1] >= MP.box[1] && vb[2] <= MP.box[2] && vb[3] <= MP.box[3])) return;
-  const dx = (vb[2] - vb[0])/4, dy = (vb[3] - vb[1])/4;
-  const box = [Math.max(-180, vb[0] - dx), Math.max(-90, vb[1] - dy), Math.min(180, vb[2] + dx), Math.min(90, vb[3] + dy)].map(v => +v.toFixed(2));
-  const key = m + dd + box; if(key === mpWant) return;
-  mpWant = key; mpBusy = m + dd; if(mpCtl) mpCtl.abort();
-  const ctl = mpCtl = new AbortController();
-  fetch(`api/points.bin?month=${m}&bbox=${box}${dd ? '&day=' + dd : ''}`, {signal:ctl.signal})
+function fetchMP(m, dd, box){   // -> promise of the detections of one month, or one day of it, in a box
+  const key = `${m}|${dd}|${box}`;
+  if(mpDays.has(key)) return Promise.resolve(mpDays.get(key));
+  if(mpAsk.has(key)) return mpAsk.get(key);
+  if(performance.now() < mpHold) return Promise.reject(new Error('wait'));   // the last request failed: no new one for 3 s
+  const p = fetch(`api/points.bin?month=${m}&bbox=${box}${dd ? '&day=' + dd : ''}`)
     .then(r => { if(!r.ok){ const x = new Error(r.status); x.status = r.status; throw x; } return r.arrayBuffer(); })
     .then(buf => {
       const hl = new DataView(buf).getUint32(0, true), h = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl))), n = h.n;
@@ -929,17 +927,32 @@ function loadMP(vb){   // on still frames: one request for the view and a margin
       const lon = take(Float32Array), lat = take(Float32Array), frp = take(Float32Array), minute = take(Uint16Array), day = take(Uint8Array), flags = take(Uint8Array);
       const vx = new Float32Array(n), vy = new Float32Array(n), vz = new Float32Array(n);
       for(let i=0;i<n;i++){ const v = unitOf(lon[i], lat[i]); vx[i] = v[0]; vy[i] = v[1]; vz[i] = v[2]; }
-      MP = {h, m, d:dd, box, n, frp, minute, day, flags, vx, vy, vz}; mpBusy = ''; dirty = true; legend();
-      if(dd && dayOn()) $('sensorNow').textContent = daySpan();
+      const o = {h, m, d:dd, box, n, frp, minute, day, flags, vx, vy, vz};
+      if(dd){ mpDays.set(key, o); if(mpDays.size > 12) mpDays.delete(mpDays.keys().next().value); }   // days are kept: Play and stepping back show them at once
+      return o;
     })
-    .catch(err => { if(mpCtl !== ctl) return;   // replaced by a newer request
-      if(err.status !== 404){ setTimeout(() => { if(mpCtl === ctl){ mpWant = mpBusy = ''; dirty = true; } }, 3000); return; }   // server busy or restarting: try again
+    .catch(err => { if(err.status !== 404) mpHold = performance.now() + 3000; throw err; })
+    .finally(() => mpAsk.delete(key));
+  mpAsk.set(key, p); return p;
+}
+function loadMP(vb){   // on still frames: one request for the view and a margin, kept until the view leaves it or the month (or day) changes
+  const m = ymOf(state.t), dd = dayOn() ? state.day : 0;
+  if(!vb || (mpReady() && vb[0] >= MP.box[0] && vb[1] >= MP.box[1] && vb[2] <= MP.box[2] && vb[3] <= MP.box[3])) return;
+  const dx = (vb[2] - vb[0])/4, dy = (vb[3] - vb[1])/4;
+  const box = [Math.max(-180, vb[0] - dx), Math.max(-90, vb[1] - dy), Math.min(180, vb[2] + dx), Math.min(90, vb[3] + dy)].map(v => +v.toFixed(2));
+  const key = m + dd + box; if(key === mpWant) return;
+  mpWant = key; mpBusy = m + dd;
+  fetchMP(m, dd, box).then(o => { if(mpWant !== key) return;   // replaced by a newer request
+      MP = o; mpBusy = ''; dirty = true; legend();
+      if(dd && dayOn()) $('sensorNow').textContent = daySpan(); })
+    .catch(err => { if(mpWant !== key) return;
+      if(err.status !== 404){ setTimeout(() => { if(mpWant === key){ mpWant = mpBusy = ''; dirty = true; } }, 3000); return; }   // server busy or restarting: try again
       mpBusy = '';
       if(dd){ mpWant = ''; toast(`No single detections for ${monthName(state.t)}.`); state.day = 0; renderTime(); }   // only this month has no file
       else { mpOff = true; legend(); } });   // this data folder has no detection files
 }
 const SATN = {Terra:'Terra, 1 km pixel', Aqua:'Aqua, 1 km pixel', SNPP:'Suomi NPP, 375 m pixel', N20:'NOAA-20, 375 m pixel'};
-function drawMP(g, moving){   // each detection as a square of its pixel size on the ground, at least 2.5 px
+function drawMP(g, moving, old){   // old: the day asked for is still loading, so the last day stays on screen, faded   // each detection as a square of its pixel size on the ground, at least 2.5 px
   const d = MP, tm = state.harm ? mParam().time : null, wide = d.h.sats.map(s => s === 'Terra' || s === 'Aqua');
   const s375 = Math.max(2.5, PC.k*RAD*0.375/111.2), s1k = Math.max(2.5, PC.k*RAD/111.2);
   if(qX.length < d.n){ qX = new Float32Array(d.n); qY = new Float32Array(d.n); qI = new Int32Array(d.n); }
@@ -953,7 +966,7 @@ function drawMP(g, moving){   // each detection as a square of its pixel size on
       if(!projU(d.vx[i], d.vy[i], d.vz[i], 6)) continue;
       cls[nQ] = d.frp[i] >= smw ? 2 : d.frp[i] >= smw/4 ? 1 : 0; qX[nQ] = PX[0]; qY[nQ] = PX[1]; qI[nQ++] = i;
     }
-    g.globalCompositeOperation = 'source-over'; g.globalAlpha = .9;
+    g.globalCompositeOperation = 'source-over'; g.globalAlpha = old ? .3 : .9;
     for(let c=0;c<3;c++){
       const r = [1.8, 2.5, 3.3][c]*clamp(PC.k/700, .25, 1); g.fillStyle = PTC[c]; g.beginPath();   // smaller on the whole world: a day has over 100,000 dots
       for(let j=0;j<nQ;j++){ if(cls[j] !== c) continue; const q = Math.max(r, (wide[d.flags[qI[j]] >> 1] ? s1k : s375)/2); if(q < 2) g.rect(qX[j] - q, qY[j] - q, 2*q, 2*q); else { g.moveTo(qX[j] + q, qY[j]); g.arc(qX[j], qY[j], q, 0, 7); } }   // tiny dots as squares: far cheaper to fill
@@ -978,7 +991,7 @@ function drawFire(g, moving, now){
   let lv = 0;
   if(state.live && PB && (zoom >= 1.8 || dayPick >= 0)){ drawPB(g); lv = 4; }   // one day has no 0.5 degree grid: single detections at every zoom
   else if(dayOn()){ if(!moving || (!mpReady() && mpBusy !== ymOf(state.t) + state.day)) loadMP(dayBox());   // while the map moves, one request at a time: the server finishes every request, also the ones the page drops
-    if(mpReady()){ drawMP(g, moving); lv = 5; } }   // one day of the record: no monthly squares
+    if(mpReady() || (MP && MP.d)){ drawMP(g, moving, !mpReady()); lv = 5; } }   // one day of the record: no monthly squares
   else if(!state.live && state.view !== 'trust' && !tilesOff){
     lv = tileLv = levelFor(PC.k, true);
     const pts = lv === 3 && mpOn();
@@ -1092,8 +1105,15 @@ function tick(now){
   } else if(spin && !dragging && !drawMode){
     const r = projection.rotate(); projection.rotate([r[0] + dt*0.004, r[1]]); dirty = true;
   }
-  if(playing && dayOn()){ playAcc += dt; if(playAcc > 110/PLAY.speed && mpReady()){ playAcc = 0;   // one day per step, each once its points are in
-    if(state.t >= PLAY.to && state.day >= dimOf(state.t)){ if(PLAY.loop){ state.day = 1; setT(PLAY.from); } else setPlaying(false); } else stepDay(1); } }
+  if(playing && dayOn()){ playAcc += dt; if(playAcc > 110/PLAY.speed && mpReady()){   // one day per step. The next days are asked ahead, and the day on screen stays until the next one is in.
+    const nx = dayAfter(state.t, state.day);
+    if(!nx) setPlaying(false);
+    else {
+      const o = mpDays.get(`${ymOf(nx[0])}|${nx[1]}|${MP.box}`);
+      if(o){ playAcc = 0; MP = o; mpWant = ''; state.day = nx[1]; setT(nx[0]); }
+      for(let a = o ? dayAfter(nx[0], nx[1]) : nx, i = 0; a && i < 2; a = dayAfter(a[0], a[1]), i++)
+        fetchMP(ymOf(a[0]), a[1], MP.box).catch(err => { if(err.status === 404 && playing){ setPlaying(false); toast('No single detections for the next month.'); } });
+    } } }
   else if(playing){ playAcc += dt; if(playAcc > 110/PLAY.speed){ playAcc = 0; if(state.t >= PLAY.to){ if(PLAY.loop) setT(PLAY.from); else setPlaying(false); } else setT(state.t + 1); } }
   const mv = isMoving(now);
   if(mv) lastMove = now; else if(wasMoving) dirty = true;   // movement ended: one full-detail frame
@@ -1754,13 +1774,16 @@ function renderCheck(){
 
 /* ---------- controls ---------- */
 function setT(t){ state.t = clamp(t, 0, T-1); state.day = Math.min(state.day, dimOf(state.t)); if(state.t !== T-1) state.pick = true; if(state.live) setLive(false); else renderTime(); }
+const dayAfter = (t, d) => d < dimOf(t) ? [t, d + 1] : t < PLAY.to ? [t + 1, 1] : PLAY.loop ? [PLAY.from, 1] : null;   // the next day of Play, or null at the end
 function stepDay(k){   // one day back or on, rolling into the next or last month
   let t = state.t, d = state.day + k;
   if(d < 1){ if(t <= 0) return; d = dimOf(--t); } else if(d > dimOf(t)){ if(t >= T-1) return; t++; d = 1; }
   state.day = d; setT(t);
 }
 function setPlaying(p){
-  if(p){ setLive(false); if(state.t < PLAY.from || state.t >= PLAY.to) setT(PLAY.from); }
+  if(p){ setLive(false);
+    if(dayOn() && state.t >= PLAY.from && state.t <= PLAY.to){ if(!dayAfter(state.t, state.day) && !PLAY.loop){ state.day = 1; setT(PLAY.from); } }   // a day: go on from it
+    else if(state.t < PLAY.from || state.t >= PLAY.to) setT(PLAY.from); }
   playing = p; playAcc = 0; $('play').innerHTML = p ? `<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2.5 1.5h2.4v9H2.5zM7.1 1.5h2.4v9H7.1z" fill="currentColor"/></svg> Pause` : `<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M3 1.5l7 4.5-7 4.5z" fill="currentColor"/></svg> Play`;
   if(!p) saveHash();
 }
