@@ -122,6 +122,8 @@ this test.
 .venv/Scripts/python pipeline.py --root data/world --sensors modis viirs-jpss1 viirs-snpp  # every country
 .venv/Scripts/python reference.py                                                         # states and place names
 .venv/Scripts/python pipeline.py --root data/world --trust-only                           # only the confidence map, seconds
+# add the current year from a zip of daily world files of the FIRMS API (needs one earlier build)
+.venv/Scripts/python pipeline.py --root data/world --sensors modis viirs-jpss1 viirs-snpp --api-zip firms_2026_api.zip --api-end 2026-11-01
 ```
 
 The pipeline downloads the yearly country archives from NASA FIRMS into `data/zips` (about 10 GB
@@ -129,6 +131,14 @@ for all three sensors; each file holds all countries, so the Mexico build downlo
 16 GB laptop the world build takes roughly 75 minutes and needs about 25 GB of free disk for
 temporary files. When `data/world` exists the app uses it instead of `data/mx`. `FIRE_DATA=<folder>`
 picks a data folder explicitly.
+
+The yearly country archives end in December 2025. The months of 2026 come from daily world files of
+the FIRMS API, packed as `<sensor>/<SP|NRT>/YYYY-MM-DD.csv` in one zip (`--api-zip`). `--api-end`
+is the first day of the unfinished month, so the record ends on a whole month. These files have no
+country and include the sea: a detection gets the country of its grid cell in the earlier years, or
+of the most common country within about 50 km (6 % of the 2026 detections); the 0.6 % with neither
+are dropped. Near-real-time (NRT) files have no type column, so their detections in cells known
+for industrial heat, volcanoes or offshore sources are masked instead.
 
 Not in the repository (too large): `data/zips`, `data/world`, and the Mexico hotspot archive
 (`data/mx/hotspots`, needed only for "Download detections").
@@ -181,12 +191,15 @@ are not adjusted between satellites, so they are not comparable across the years
 - `test_harmonize.py`, `test_api.py` - a synthetic record with a known answer, invariants of the
   build, and the API on the Mexico data.
 - `ASSETS.md` - every third-party asset (fonts, Earth texture) and its licence.
+- `Dockerfile`, `deploy_space.py` - publish the app as a Hugging Face Docker Space, with the data in a
+  dataset repository. Public page: https://averagecasual-blaze-bridge.hf.space
 - `SLIDES.md` - draft of the 7 slides. `screenshots/` - pictures for them (older layout).
 
 ## Limits
 
-- The monthly record ends in December 2025, the last month in the FIRMS yearly files. The months
-  of 2026 need a FIRMS MAP_KEY and are not included. The last 7 days are shown separately.
+- The monthly record ends in October 2026. From August 2026 (MODIS: September) the months come
+  from near-real-time files: they are first numbers, the page marks them, and NASA replaces them
+  with final files some months later. The last 7 days are shown separately.
 - Counts are not corrected for cloud cover. A cloudy month looks like a quiet month.
 - Main view: months before February 2012 are estimates from MODIS. The total is reliable, but the
   estimate cannot say where the small fires were that MODIS never saw. Night counts of these years

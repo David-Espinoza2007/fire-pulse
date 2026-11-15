@@ -31,7 +31,7 @@ let G, meta, VAL, cellId, ctry, GR, Hm, Rw, Nt = null, topo110;
 try {
   const [bin, t110, m, v] = await Promise.all([
     fetchWithProgress('api/globe.bin', (n, total) => {
-      $('loadText').textContent = `Loading 25 years of fire detections · ${(n/1e6).toFixed(1)} of ${(total/1e6).toFixed(1)} MB`;
+      $('loadText').textContent = `Loading 26 years of fire detections · ${(n/1e6).toFixed(1)} of ${(total/1e6).toFixed(1)} MB`;
       $('loadBar').style.width = (100*Math.min(1, n/total)).toFixed(1) + '%'; }),
     fetch('vendor/countries-110m.json').then(r => r.json()), api('api/meta'), api('api/validation')]);
   let bytes = new Uint8Array(bin);
