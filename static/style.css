@@ -38,8 +38,6 @@ h2,h3,p{margin:0}
 .search input:focus,.field select:focus,.area input:focus{border-color:var(--muted);outline:none}
 .field{display:flex;flex-direction:column;gap:3px;font-size:13px;color:var(--muted);min-width:0}
 .field.inline{flex-direction:row}
-.pick{display:flex;gap:8px;flex-wrap:wrap}
-.pick .field{flex:1 1 100px}
 .menus{display:flex;flex-wrap:wrap;gap:6px;margin-left:auto}
 details.tb{position:relative}
 details.tb > summary{list-style:none;display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:5px 10px;border:1px solid var(--line);border-radius:var(--r);cursor:pointer;font-weight:500;font-size:14px;white-space:nowrap;user-select:none}
@@ -340,7 +338,6 @@ dialog a{color:var(--fg)}
 .sb-in{display:flex;flex-direction:column;gap:9px;padding:0 12px 14px 0}
 .range-grid{display:grid;grid-template-columns:auto 1fr 1fr;gap:6px;align-items:center}
 .range-grid select,.ctl select{background:var(--surface);border:1px solid var(--line);color:var(--fg);border-radius:var(--r);padding:4px 6px;font:inherit;font-size:14px;min-height:30px;min-width:0}
-.ptag{display:inline-block;font-size:11px;font-weight:600;color:#d9a54a;border:1px solid rgba(217,165,74,.5);border-radius:2px;padding:0 5px;margin-right:4px}
 .crumb{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
 .crumb button{font:500 13px var(--body);color:var(--fg);background:none;border:1px solid var(--line);border-radius:2px;padding:2px 8px;cursor:pointer}
 .crumb button.on{border-color:var(--fg)}

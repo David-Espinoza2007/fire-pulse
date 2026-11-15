@@ -1339,7 +1339,7 @@ function renderCrumb(){
   el.innerHTML = h;
 }
 $('crumb').addEventListener('click', e => { const b = e.target.closest('button[data-act]'); if(!b) return;
-  if(b.dataset.act === 'world') $('wholeBtn').click(); else selectCountry(+b.dataset.act.slice(1)); });
+  if(b.dataset.act === 'world') clearPlace(); else selectCountry(+b.dataset.act.slice(1)); });
 function howto(){
   $('howto').textContent = drawMode === 'box' ? 'Drag a rectangle over the area you want.' : drawMode === 'poly' ? 'Click the corners of the area. Double-click or press Finish shape to close it.'
     : isFlat() && stateMap.size ? 'Drag to move. Scroll to zoom. Click a state to choose it.' : 'Drag to spin. Scroll to zoom. Click a country to fly in.';
@@ -1381,8 +1381,7 @@ const srcWord = (x, t) => state.unit === 'viirs' ? (isEst(t) ? 'Estimated from t
 /* ---------- answer ---------- */
 const cal = $('cal'), Wv = 360, L = 38, Rm = 10, Tp = 8, B = 20, iw = Wv - L - Rm, sfmt = d3.format('~s');
 let calColor = [], calTip = [];
-for(const id of ['yFrom','yTo','pYear']) for(const y of YEARS) $(id).add(new Option(y, y));
-MONTHS.forEach((m, i) => $('pMonth').add(new Option(m, i)));
+for(const id of ['yFrom','yTo']) for(const y of YEARS) $(id).add(new Option(y, y));
 $('yFrom').value = YEARS[0]; $('yTo').value = YEARS.at(-1);
 $('tRange').max = T - 1;
 const yearRange = () => { const a = +$('yFrom').value, b = +$('yTo').value; return [Math.min(a, b), Math.max(a, b)]; };
@@ -1451,9 +1450,6 @@ function syncWhen(){
   const pick = !state.live && (state.pick || state.t !== T-1);
   $('wLive').setAttribute('aria-pressed', state.live);
   $('wLatest').setAttribute('aria-pressed', !state.live && !pick);
-  $('wPick').setAttribute('aria-pressed', pick);
-  $('pickWrap').hidden = !pick;
-  $('pYear').value = yearOf(state.t); $('pMonth').value = monOf(state.t);
 }
 
 const pbDay = d => dShort(new Date(PB.first.getTime() + d*864e5).toISOString().slice(0, 10));   // day d of the week file, as "9 Nov"
@@ -2020,11 +2016,9 @@ document.querySelectorAll('input[name=time]').forEach(r => r.addEventListener('c
 $('strong').onchange = e => { state.strong = e.target.checked; dirty = true; lastCheck = 0; };
 $('cGrid').onclick = $('cRings').onclick = e => { state.cal = e.currentTarget.id === 'cGrid' ? 'grid' : 'rings';
   $('cGrid').setAttribute('aria-pressed', state.cal === 'grid'); $('cRings').setAttribute('aria-pressed', state.cal === 'rings'); if(months) renderCalendar(); };
-$('wholeBtn').onclick = $('worldBtn').onclick = clearPlace;
+$('worldBtn').onclick = clearPlace;
 $('wLive').onclick = () => { setPlaying(false); setLive(true); };
 $('wLatest').onclick = () => { setPlaying(false); state.pick = false; setT(T-1); };
-$('wPick').onclick = () => { setPlaying(false); state.pick = true; if(state.live) setLive(false); else renderTime(); $('pMonth').focus(); };
-$('pYear').onchange = $('pMonth').onchange = () => { setPlaying(false); setT(tOf(+$('pYear').value, +$('pMonth').value)); };
 $('play').onclick = () => setPlaying(!playing);
 // the time bar: a ruler of years with brackets for the range and a line for the month shown; the native slider sits on top
 const rulerX = t => ((t + .5)/T*100).toFixed(3) + '%';

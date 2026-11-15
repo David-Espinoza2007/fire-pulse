@@ -34,7 +34,7 @@
       <button type="button" class="panel-toggle" id="sideBtn" aria-expanded="true" aria-controls="sbBody" title="Fold the research tools"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M8 2L4 6l4 4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg><span class="sr">Fold the research tools</span></button>
     </div>
     <nav class="sb-rail" aria-label="Sections">
-      <button type="button" data-sec="secGeo" title="Geography">A</button><button type="button" data-sec="secTime" title="Time">B</button><button type="button" data-sec="secPlay" title="Playback">C</button><button type="button" data-sec="secSat" title="Satellites and harmonization">D</button><button type="button" data-sec="secDisp" title="Display">E</button>
+      <button type="button" data-sec="secGeo" title="Geography">A</button><button type="button" data-sec="secTime" title="Time">B</button><button type="button" data-sec="secSat" title="Satellites and harmonization">C</button><button type="button" data-sec="secDisp" title="Display">D</button>
     </nav>
     <div class="sb-body" id="sbBody">
       <details class="sb-sec" id="secGeo" open>
@@ -46,7 +46,6 @@
           <div class="actions">
             <button type="button" class="btn" id="boxDraw" aria-pressed="false">Draw a box</button>
             <button type="button" class="btn" id="polyDraw" aria-pressed="false">Draw a shape</button>
-            <button type="button" class="btn" id="wholeBtn">Reset to whole planet</button>
           </div>
           <details class="area" id="area">
             <summary>Type coordinates</summary>
@@ -59,7 +58,6 @@
             <button type="button" class="btn" id="boxApply">Use these bounds</button>
             <p class="hint">Degrees. South and west are negative. Areas are cut on a grid of about 5 km.</p>
           </details>
-          <p class="hint"><span class="ptag">proposed</span> Continents: the boundary data has no continent field yet, so this level is not offered.</p>
         </div>
       </details>
 
@@ -75,27 +73,12 @@
             <span class="oc-k">To</span><select id="ptM" aria-label="To month"></select><select id="ptY" aria-label="To year"></select>
           </div>
           <div hidden><select id="yFrom"></select><select id="yTo"></select></div>
-          <p class="pop-k">Go to a month</p>
-          <div class="seg" role="group" aria-label="When"><button type="button" id="wPick" aria-pressed="false">Pick a month</button></div>
-          <div class="pick" id="pickWrap" hidden>
-            <label class="field">Month<select id="pMonth"></select></label>
-            <label class="field">Year<select id="pYear"></select></label>
-          </div>
-          <p class="hint">The archive is monthly, November 2000 to December 2025. The last 7 days can be seen day by day. At the closest zoom, a past month shows its single detections with date and time.</p>
-        </div>
-      </details>
-
-      <details class="sb-sec" id="secPlay">
-        <summary><span class="lt">C</span>Playback</summary>
-        <div class="sb-in">
-          <label class="opt"><input type="checkbox" id="pLoop"> Loop the range</label>
-          <p class="hint">Each frame is one real month of detections; nothing is interpolated between frames. Speed is on the time bar.</p>
-          <p class="hint"><span class="ptag">proposed</span> Step by year (sum of 12 months on the globe).</p>
+          <label class="opt"><input type="checkbox" id="pLoop"> Loop the range when playing</label>
         </div>
       </details>
 
       <details class="sb-sec" id="secSat" open>
-        <summary><span class="lt">D</span>Satellites and harmonization</summary>
+        <summary><span class="lt">C</span>Satellites and harmonization</summary>
         <div class="sb-in">
           <fieldset class="step inner">
             <legend class="pop-k">Counts</legend>
@@ -117,22 +100,13 @@
             <label class="opt check" id="strongWrap"><input type="checkbox" id="strong"> Strong fires only
               <span class="opt-help">Last 7 days only: detections above the week's 90th percentile of fire radiative power.</span></label>
           </fieldset>
-          <p class="hint">Confidence filter is fixed in the build: MODIS 30 % or more, VIIRS not "low". The two scales are not treated as equivalent.</p>
-          <p class="hint"><span class="ptag">proposed</span> MODIS-only or VIIRS-only layer on the globe (needs the server to split the grid by sensor).</p>
           <button type="button" class="link" id="aboutBtn">How the harmonization works</button>
-          <p class="hint" id="foot">A fire detection is a place where a satellite saw the heat of a fire. A large fire gives many detections.</p>
         </div>
       </details>
 
       <details class="sb-sec" id="secDisp">
-        <summary><span class="lt">E</span>Display</summary>
+        <summary><span class="lt">D</span>Display</summary>
         <div class="sb-in">
-          <p class="pop-k">Globe</p>
-          <div class="vrow">
-            <button type="button" class="vbox" data-look="realistic" aria-pressed="false"><svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="11" fill="#1f4a6e" stroke="#8fb4d8" stroke-width="1.2"/><path d="M7 11c3-3 6 0 8-1s3-3 6-1c0 3-3 4-5 4s-4 3-7 2M9 18c2-1 4 0 5 2" fill="#6f8a4c" stroke="none"/><circle cx="17" cy="15" r="1.8" fill="var(--fire-mid)"/></svg>Realistic</button>
-            <button type="button" class="vbox" data-look="minimal" aria-pressed="false"><svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="11" fill="#16191c" stroke="#3b4049" stroke-width="1"/><path d="M8 10c3-2 5 1 7 0s3-3 5-1M7 16c3 1 4-1 7 1s4 1 6-1" stroke="#3b4049" stroke-width="2" fill="none"/><circle cx="17" cy="15" r="1.8" fill="var(--fire-mid)"/></svg>Minimal</button>
-          </div>
-          <div class="opt"><button type="button" class="switch flat-toggle" role="switch" aria-checked="false" aria-labelledby="flatLbl2"><i></i></button><span id="flatLbl2">Flat map instead of a globe</span></div>
           <fieldset class="step" id="stepShow">
             <legend class="pop-k">Colour the fires by</legend>
             <div class="vrow">
@@ -230,10 +204,10 @@
 
     <div class="tiles" id="tiles"></div>
 
-    <section class="sec" id="techSec">
-      <div class="sec-head"><h3>Record for this period</h3><span id="techSpan"></span></div>
+    <details class="sec" id="techSec">
+      <summary>Record for this period <span class="muted" id="techSpan"></span></summary>
       <table class="tech" id="techTable"></table>
-    </section>
+    </details>
 
     <section class="sec" id="lookSec" hidden>
       <h3>Where to look first</h3>
