@@ -3,13 +3,16 @@
     python pipeline.py --root data/mx --countries Mexico     # quick first pass
     python pipeline.py --root data/world                     # every country
     python pipeline.py --root data/world --trust-only        # only serve/trust.json, from the tables already built
+    python pipeline.py --root data/world --sensors modis viirs-jpss1 viirs-snpp --api-zip firms_2026_api.zip --api-end 2026-11-01   # add the current year
 
 Steps are resumable: a year that already has its Parquet file is skipped.
 """
 import argparse
+import datetime
 import gzip
 import json
 import os
+import re
 import shutil
 import struct
 from array import array
@@ -84,6 +87,70 @@ def ingest(root, sensor, year, countries=None, delete_zip=False):
     shutil.rmtree(tmp)
     if delete_zip:
         zpath.unlink()
+
+
+API_DIRS = {"modis": "modis", "viirs-snpp": "viirs-snpp", "viirs-noaa20": "viirs-jpss1"}   # folder in the zip -> our sensor name
+
+
+def ingest_api(root, zpath, end):
+    """A zip of daily world files from the FIRMS API (<sensor>/<SP|NRT>/YYYY-MM-DD.csv) -> hotspots/{sensor}/{year}.parquet,
+    for the year the yearly country files do not hold yet. Only local solar dates before `end` are kept, so the record ends on a whole month.
+    These files have no country and include the sea. The country comes from the 0.05 degree cell of the earlier years
+    (serve/cell_country.parquet), or else from the most common country of its 0.5 degree cell; detections with neither are dropped.
+    NRT files have no type column. Their detections get type 2 in a cell known for static sources: serve/static.parquet
+    with reason 'type', and cells where the SP files of this zip are mostly static sources (this covers the sea)."""
+    tmp = root / "tmp" / "api"
+    shutil.rmtree(tmp, ignore_errors=True)
+    years = set()
+    with zipfile.ZipFile(zpath) as z:
+        for member in z.namelist():
+            m = re.fullmatch(r"(?:[^/]+/)?([a-z0-9-]+)/(SP|NRT)/((\d{4})-\d{2}-\d{2})\.csv", member)
+            if not (m and m[1] in API_DIRS):
+                continue
+            years.add(int(m[4]))
+            (tmp / API_DIRS[m[1]]).mkdir(parents=True, exist_ok=True)   # the name is built from the checked parts: never outside tmp
+            with z.open(member) as src, open(tmp / API_DIRS[m[1]] / f"{m[2]}_{m[3]}.csv", "wb") as dst:
+                shutil.copyfileobj(src, dst)
+    if len(years) != 1:
+        raise SystemExit(f"{zpath}: expected daily files of one year, found {sorted(years)}")
+    year, serve, con = years.pop(), (root / "serve").as_posix(), connect(root)
+    for i, sensor in enumerate(sorted(p.name for p in tmp.iterdir())):
+        con.execute(("INSERT INTO api " if i else "CREATE TABLE api AS ") + f"""
+          SELECT '{sensor}' AS sensor, CAST(latitude AS FLOAT) AS latitude, CAST(longitude AS FLOAT) AS longitude, acq_date,
+                 CAST(acq_time AS SMALLINT) AS acq_time,
+                 CASE satellite WHEN 'T' THEN 'Terra' WHEN 'A' THEN 'Aqua' WHEN 'N' THEN 'SNPP' ELSE satellite END AS satellite,
+                 confidence, CAST(frp AS FLOAT) AS frp, daynight, CAST(type AS TINYINT) AS type
+          FROM read_csv('{(tmp / sensor).as_posix()}/*.csv', union_by_name = true,
+                        types = {{'acq_date': 'DATE', 'acq_time': 'VARCHAR', 'confidence': 'VARCHAR',
+                                  'satellite': 'VARCHAR', 'version': 'VARCHAR', 'daynight': 'VARCHAR'}})
+          WHERE CAST(acq_date + to_minutes(CAST(CAST(acq_time AS INT) // 100 * 60 + CAST(acq_time AS INT) % 100
+                                                + round(longitude * 4) AS BIGINT)) AS DATE) < DATE '{end}'""")
+    cell = f"CAST(floor(longitude / {H.CELL}) AS INT) AS cell_x, CAST(floor(latitude / {H.CELL}) AS INT) AS cell_y"
+    con.execute(f"""CREATE TABLE st AS
+      SELECT cell_x, cell_y FROM read_parquet('{serve}/static.parquet') WHERE reason = 'type'
+      UNION SELECT cell_x, cell_y FROM (SELECT {cell}, type FROM api WHERE type IS NOT NULL) GROUP BY ALL
+            HAVING count(*) FILTER (type <> 0) >= 20 AND 2 * count(*) FILTER (type <> 0) >= count(*)""")
+    con.execute(f"""CREATE TABLE cc10 AS SELECT gx, gy, arg_max(country, n) AS country
+      FROM (SELECT CAST(floor(cell_x / 10.0) AS INT) AS gx, CAST(floor(cell_y / 10.0) AS INT) AS gy, country, count(*) AS n
+            FROM read_parquet('{serve}/cell_country.parquet') WHERE country IS NOT NULL GROUP BY ALL) GROUP BY ALL""")
+    con.execute(f"""CREATE TABLE api2 AS
+      SELECT d.* EXCLUDE (type, cell_x, cell_y), CASE WHEN d.type IS NULL AND st.cell_x IS NOT NULL THEN 2 ELSE d.type END AS type,
+             coalesce(c.country, c10.country) AS country, c.country IS NULL AS far
+      FROM (SELECT *, {cell} FROM api) d
+      LEFT JOIN st ON st.cell_x = d.cell_x AND st.cell_y = d.cell_y
+      LEFT JOIN read_parquet('{serve}/cell_country.parquet') c ON c.cell_x = d.cell_x AND c.cell_y = d.cell_y
+      LEFT JOIN cc10 c10 ON c10.gx = CAST(floor(d.cell_x / 10.0) AS INT) AND c10.gy = CAST(floor(d.cell_y / 10.0) AS INT)""")
+    stats = rows(con, """SELECT sensor, count(*) AS rows, count(*) FILTER (country IS NULL) AS no_country,
+                                count(*) FILTER (far AND country IS NOT NULL) AS country_from_50km, max(acq_date) AS last_utc_date
+                         FROM api2 GROUP BY 1 ORDER BY 1""")
+    for r in stats:
+        print("api", year, r, flush=True)
+        copy_to(con, f"""SELECT * EXCLUDE (sensor, far) FROM api2 WHERE sensor = '{r["sensor"]}' AND country IS NOT NULL
+                         ORDER BY CAST(floor(latitude) AS INT), longitude""", root / "hotspots" / r["sensor"] / f"{year}.parquet")
+    con.close()
+    shutil.rmtree(tmp)
+    shutil.rmtree(root / "tmp_duck", ignore_errors=True)
+    return stats
 
 
 def cell_passes(root, con, sensors):
@@ -486,6 +553,8 @@ if __name__ == "__main__":
     ap.add_argument("--sensors", nargs="+", default=["modis", "viirs-jpss1"], choices=list(SENSORS))
     ap.add_argument("--delete-zips", action="store_true", help="delete each zip after its Parquet file is written")
     ap.add_argument("--trust-only", action="store_true", help="only write serve/trust.json (no download, no build)")
+    ap.add_argument("--api-zip", type=Path, help="zip of daily world files from the FIRMS API for the current year (see ingest_api); needs an earlier build in --root")
+    ap.add_argument("--api-end", help="with --api-zip: keep local dates before this day, e.g. 2026-11-01 (the first day of the unfinished month)")
     args = ap.parse_args()
     if args.trust_only:
         raise SystemExit(trust_cells(args.root))
@@ -493,6 +562,9 @@ if __name__ == "__main__":
     for sensor in args.sensors:
         for year in YEARS[sensor]:
             ingest(args.root, sensor, year, wanted, args.delete_zips)
+    if args.api_zip:
+        datetime.date.fromisoformat(args.api_end or "")   # a clear error before any work
+        ingest_api(args.root, args.api_zip, args.api_end)
     result = build(args.root, args.sensors)
     for sat, v in result["satellites"].items():
         print(sat, "held-out error:", {k: round(x, 3) for k, x in v["overall"].items()})

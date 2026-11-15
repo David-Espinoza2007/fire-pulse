@@ -21,7 +21,6 @@
       <datalist id="places"></datalist>
       <div class="q-results" id="qResults" role="listbox" hidden></div>
     </form>
-    <div class="quick" id="quick" aria-label="Quick places"></div>
     <button type="button" class="btn primary" id="polyDone" hidden>Finish shape</button>
     <div class="mode-toggle">
       <span id="modeLabel">Research tools</span>
@@ -43,8 +42,6 @@
         <div class="sb-in">
           <div class="crumb" id="crumb" aria-label="Selected area"></div>
           <label class="field" id="stateWrap" hidden>State or province<select id="stateSel"><option value="">Whole country</option></select></label>
-          <p class="pop-k">Quick places</p>
-          <div class="chips" id="chips"></div>
           <p class="pop-k">Draw on the map</p>
           <div class="actions">
             <button type="button" class="btn" id="boxDraw" aria-pressed="false">Draw a box</button>
@@ -132,7 +129,6 @@
         <div class="sb-in">
           <p class="pop-k">Globe</p>
           <div class="vrow">
-            <button type="button" class="vbox" data-look="standard" aria-pressed="true"><svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="11" fill="#0a1428" stroke="#5a7bb5" stroke-width="1.5"/><path d="M8 10c3-2 5 1 7 0s3-3 5-1M7 16c3 1 4-1 7 1s4 1 6-1" stroke="#33436a" stroke-width="2" fill="none"/><circle cx="17" cy="15" r="1.8" fill="var(--fire-mid)"/></svg>Standard</button>
             <button type="button" class="vbox" data-look="realistic" aria-pressed="false"><svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="11" fill="#1f4a6e" stroke="#8fb4d8" stroke-width="1.2"/><path d="M7 11c3-3 6 0 8-1s3-3 6-1c0 3-3 4-5 4s-4 3-7 2M9 18c2-1 4 0 5 2" fill="#6f8a4c" stroke="none"/><circle cx="17" cy="15" r="1.8" fill="var(--fire-mid)"/></svg>Realistic</button>
             <button type="button" class="vbox" data-look="minimal" aria-pressed="false"><svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="11" fill="#16191c" stroke="#3b4049" stroke-width="1"/><path d="M8 10c3-2 5 1 7 0s3-3 5-1M7 16c3 1 4-1 7 1s4 1 6-1" stroke="#3b4049" stroke-width="2" fill="none"/><circle cx="17" cy="15" r="1.8" fill="var(--fire-mid)"/></svg>Minimal</button>
           </div>
@@ -164,9 +160,10 @@
       <canvas id="cv"></canvas>
       <p class="map-title" id="mapTitle"></p>
       <div class="look-seg" role="group" aria-label="Globe look">
-        <button type="button" data-look="standard" aria-pressed="true">Standard</button><button type="button" data-look="realistic" aria-pressed="false">Realistic</button><button type="button" data-look="minimal" aria-pressed="false">Minimal</button>
+        <button type="button" data-look="realistic" aria-pressed="false">Realistic</button><button type="button" data-look="minimal" aria-pressed="false">Minimal</button>
       </div>
       <div class="flat-sw"><button type="button" class="switch flat-toggle" role="switch" aria-checked="false" aria-labelledby="flatLbl"><i></i></button><span id="flatLbl">Flat map</span></div>
+      <button type="button" class="btn primary world-btn" id="worldBtn" hidden>← Whole planet</button>
       <div class="mcard" id="mcard" aria-live="polite">
         <p class="mc-k" id="mcPlace"></p>
         <p class="mc-big" id="mcBig"></p>
@@ -185,6 +182,7 @@
         <button type="button" class="ibtn" id="tPrev" title="Previous month" aria-label="Previous month"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M8 2L4 6l4 4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button>
         <button type="button" id="play" class="btn primary play">Play</button>
         <button type="button" class="ibtn" id="tNext" title="Next month" aria-label="Next month"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button>
+        <select id="dDay" aria-label="Day"><option value="0">All days</option></select><select id="dMon" aria-label="Month"></select><select id="dYear" aria-label="Year"></select>
       </div>
       <div class="when">
         <label for="tRange" class="readout" id="readout"></label>

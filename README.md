@@ -157,6 +157,11 @@ selected month, from all satellites, as a white square of the pixel size: 375 m 
 MODIS. The squares below keep the comparable count; the points show where exactly the fires
 were. This needs the hotspot archive (`<data>/hotspots`).
 
+The Day menu in the bottom bar shows one day of any month in the record. Then the map draws no
+monthly squares, only that day's detections, at every zoom, like one day of the last 7 days. A day
+is the local solar date of each detection. Single days are raw detections from all satellites: they
+are not adjusted between satellites, so they are not comparable across the years like the monthly count.
+
 ## Files
 
 - `harmonize.py` - the method, as DuckDB SQL: grid, conversion tables, calibration, ratios in both directions.
@@ -167,7 +172,7 @@ were. This needs the hotspot archive (`<data>/hotspots`).
   polygon, with day/night filter; `unit=viirs` or `unit=aqua` picks the record, and each month
   says whether it is measured), `/api/tiles/{level}/{tx}/{ty}` (map tiles with all months),
   `/api/live*` (last 7 days: totals, "where to look first", and `/api/live/points.bin` with every
-  detection of the week), `/api/points.bin` (every detection of one month in a box), `/api/states`, `/api/places`, `/api/validation`, `/api/trust` (test
+  detection of the week), `/api/points.bin` (every detection of one month in a box; `day=1..31` for one day of it), `/api/states`, `/api/places`, `/api/validation`, `/api/trust` (test
   error per square of 1 degree, for the confidence map), `/api/hotspots.csv`,
   `/api/globe.bin` (the 50 km grid for the whole globe).
 - `tiles.py` - builds the map tiles (binary layout in its first lines).

@@ -267,7 +267,7 @@ def test_month_points(client, tmp_path, monkeypatch):
     blob = r.content
     nh = struct.unpack("<I", blob[:4])[0]
     head, pos = json.loads(blob[4:4 + nh]), 4 + nh + (-(4 + nh) % 4)
-    assert head == {"n": 2, "month": "2010-05", "truncated": False, "sats": ["Aqua", "Terra"]}
+    assert head == {"n": 2, "month": "2010-05", "day": None, "truncated": False, "sats": ["Aqua", "Terra"]}
     cols = {}
     for name, code, size in (("lon", "f", 4), ("lat", "f", 4), ("frp", "f", 4), ("min", "H", 2), ("day", "B", 1), ("flag", "B", 1)):
         cols[name] = list(array(code, blob[pos:pos + 2 * size]))
@@ -277,6 +277,12 @@ def test_month_points(client, tmp_path, monkeypatch):
     assert get("2010-05", headers={"If-None-Match": r.headers["etag"]}).status_code == 304
     assert struct.unpack("<I", get("2011-01").content[:4])[0] and b'"n": 0' in get("2011-01").content   # the file of the year before is read
     assert b'"n": 1' in get("2010-06").content and get("2013-03").status_code == 404
+    one = lambda month, day: c.get("/api/points.bin", params={"month": month, "bbox": "-101,19,-99,21", "day": day})
+    assert b'"n": 2, "month": "2010-05", "day": 31' in one("2010-05", 31).content      # both 31 May local, one of them 1 June UTC
+    assert b'"n": 0' in one("2010-05", 10).content and b'"n": 1, "month": "2010-06", "day": 1' in one("2010-06", 1).content
+    assert one("2010-06", 31).status_code == 422 and one("2010-05", 0).status_code == 422
+    assert one("2010-05", 31).headers["etag"] != r.headers["etag"]
+    assert c.get("/api/points.bin", params={"month": "2010-05", "bbox": "-180,-90,180,90", "day": 31}).status_code == 200
     assert c.get("/api/points.bin", params={"month": "2010-5", "bbox": "-101,19,-99,21"}).status_code == 422
 
 

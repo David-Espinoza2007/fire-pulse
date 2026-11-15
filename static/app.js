@@ -57,6 +57,7 @@ const U = G.units, T = G.months, RES = G.res, NCOL = G.ncol, NROW = Math.round(1
 const yearOf = t => Y0 + ((t + M0)/12 | 0), monOf = t => (t + M0) % 12, tOf = (y, m) => (y - Y0)*12 + m - M0;
 const tAt = ym => tOf(+ym.slice(0,4), +ym.slice(5,7) - 1);
 const ymOf = t => `${yearOf(t)}-${String(monOf(t) + 1).padStart(2, '0')}`;
+const dimOf = t => new Date(Date.UTC(yearOf(t), monOf(t) + 1, 0)).getUTCDate();   // days in month t
 const firstOf = mo => ((mo - M0) % 12 + 12) % 12;   // first t of a calendar month
 const YEARS = d3.range(Y0, yearOf(T-1) + 1), AQUA = tAt(meta.aqua_start), MODEL = tAt(meta.model_start);
 const PRIMARY = VAL.primary, PKEY = PRIMARY.toLowerCase(), SAT = VAL.satellites[PRIMARY];
@@ -166,7 +167,7 @@ const disp = {states:true, places:true};   // viewer settings: hide sparse squar
 const DENS = [1, 5, 20, 50, 200, 1000];
 
 /* ---------- state ---------- */
-const state = {t:T-1, harm:true, unit:UNITS[0], view:'count', cal:'grid', live:false, time:'all', strong:false, pick:false, sel:{kind:'world', name:'Earth', id:0}};
+const state = {t:T-1, day:0, harm:true, unit:UNITS[0], view:'count', cal:'grid', live:false, time:'all', strong:false, pick:false, sel:{kind:'world', name:'Earth', id:0}};
 let months = null, S = null, liveArea = null, lookList = null, lookAll = false, lookFrom = null, lastSeason = null, lastTiles = [];
 const liveCells = new Map();
 let viewPlaces = null, curVB = null, viewKey = '', wasFlat = false, statesOff = false, placesOff = false;
@@ -242,11 +243,12 @@ function setZoom(z){
 const bump = () => { baseVer++; dirty = true; };   // something on the base map changed
 
 function resize(){
+  const out = W && flatOut();   // the whole flat world stays whole when the size changes
   W = wrap.clientWidth; H = wrap.clientHeight; if(!W || !H) return;
   dpr = Math.min(window.devicePixelRatio || 1, 2);
   cv.width = baseC.width = Math.round(W*dpr); cv.height = baseC.height = Math.round(H*dpr); baseSig = '';
   S0 = Math.min(W, H)*0.42;
-  projection.translate([W/2, H/2]).clipExtent([[-100, -100], [W + 100, H + 100]]); setZoom(zoom);   // deep zoom: shapes are cut near the screen, the canvas never fills polygons thousands of pixels wide
+  projection.translate([W/2, H/2]).clipExtent([[-100, -100], [W + 100, H + 100]]); setZoom(out ? 0 : zoom);   // deep zoom: shapes are cut near the screen, the canvas never fills polygons thousands of pixels wide
   draw(); dirty = false;   // resizing clears the canvas, so repaint now instead of waiting for the next frame
 }
 new ResizeObserver(resize).observe(wrap);
@@ -356,14 +358,12 @@ const hatchC = Object.assign(document.createElement('canvas'), {width:6, height:
   for(const o of [-6, 0, 6]){ h.moveTo(o, 6); h.lineTo(o + 6, 0); } h.stroke(); }   // "/" lines that tile without seams
 
 
-/* ---------- globe look: Standard (the original drawing) or Minimal (neutral, for reading fire). Presentation only:
+/* ---------- globe look: Minimal (neutral, for reading fire) or Realistic (relief and land cover). Presentation only:
    the fire layer, data and interaction are the same. Chosen with the switch on the map, kept per browser. ---------- */
 const LOOK = {
-  standard:{space:'#060a13', ocean:'#0a1428', land:'#1b2742', border:'#33436a', borderW:.6, graticule:.35, line:'#263350', stars:1,
-            atmo:'rgba(120,180,255,.38)', atmoOut:1.16, shade:true, glow:true},
-  minimal:{space:'#0c0e10', ocean:'#16191c', land:'#262a30', border:'#3b4049', borderW:.5, graticule:.22, line:'#2c3138', stars:0,
+  minimal:{space:'#0c0e10', ocean:'#16191c', land:'#262a30', border:'#3b4049', borderW:.5, graticule:.22, line:'#2c3138', stars:.7,
            atmo:null, limb:'#3b4049', shade:false, glow:false},
-  // Natural Earth II relief and land cover (public domain); heavier to draw than the other two
+  // Natural Earth II relief and land cover (public domain); heavier to draw
   realistic:{space:'#05070b', ocean:'#0d2238', land:null, border:'rgba(255,255,255,.28)', borderW:.5, graticule:0, line:'#263350', stars:.6,
              atmo:'rgba(150,195,255,.30)', atmoOut:1.08, shade:false, glow:true, texture:true},
 };
@@ -408,6 +408,7 @@ function drawTexture(g, moving){
       else {
         let l = xr; for(let it=0;it<6;it++) l -= ((1 - a)*cp*Math.sin(l) + a*l - xr)/((1 - a)*cp*Math.cos(l) + a || 1e-9);
         if(!(Math.abs(l) <= (flatMap ? Math.PI : Math.PI/2))) continue;
+        if(Math.abs((1 - a)*cp*Math.sin(l) + a*l - xr) > 2e-3) continue;   // outside the map the solve does not settle; without this it drew rings around the globe
         X = cp*Math.sin(l); Y = sp; Z = cp*Math.cos(l);
       }
       const vx = X*P.eX + Y*P.nX + Z*P.cX, vy = X*P.eY + Y*P.nY + Z*P.cY, vz = Y*P.nZ + Z*P.cZ;
@@ -425,7 +426,7 @@ const pageQ = new URLSearchParams(location.search);
 if(pageQ.get('embed') === '1') document.querySelector('.app').classList.add('embed');
 const lookStore = {get(){ try { return localStorage.getItem('fp-globe'); } catch(e){ return null; } }, set(v){ try { localStorage.setItem('fp-globe', v); } catch(e){} },
   get2(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }, set2(k, v){ try { localStorage.setItem(k, v); } catch(e){} }};
-let globeLook = [pageQ.get('globe'), lookStore.get()].find(v => v in LOOK) || 'standard';
+let globeLook = [pageQ.get('globe'), lookStore.get()].find(v => v in LOOK) || 'minimal';
 const syncLook = () => document.querySelectorAll('button[data-look]').forEach(b => b.setAttribute('aria-pressed', b.dataset.look === globeLook));
 function setGlobeLook(look){
   if(!(look in LOOK) || look === globeLook) return;
@@ -882,15 +883,21 @@ function drawPB(g){
 /* ---------- a past month at the closest zoom: its single detections, asked for by view (layout in app.py, /api/points.bin) ---------- */
 let MP = null, mpWant = '', mpCtl = null, mpOff = !HAS.points;
 const mpOn = () => !mpOff && !playing && isFlat() && PC.k*0.05*RAD >= 12;   // a square of 5 km is at least 12 px wide
-function loadMP(vb){   // on still frames: one request for the view and a margin, kept until the view leaves it or the month changes
-  const m = ymOf(state.t);
-  if(!vb || (MP && MP.m === m && vb[0] >= MP.box[0] && vb[1] >= MP.box[1] && vb[2] <= MP.box[2] && vb[3] <= MP.box[3])) return;
+const dayOn = () => state.day > 0 && !state.live && !mpOff;   // one day of the record: its raw detections at every zoom
+const mpReady = () => MP && MP.m === ymOf(state.t) && MP.d === (dayOn() ? state.day : 0);
+const dayBox = () => { const vb = isFlat() && tileView(); return vb && vb[2] - vb[0] < 60 ? vb : [-180, -90, 180, 90]; };   // the whole world on the globe or zoomed out
+const daySpan = () => { if(!mpReady()) return 'Loading the detections…';
+  const where = MP.box[2] - MP.box[0] >= 359 ? 'in the world' : 'in this view';   // a wide view asks for the whole world
+  return MP.h.truncated ? `Strongest ${fmt(MP.n)} detections ${where} shown, as reported` : `${fmt(MP.n)} detections ${where}, as reported`; };
+function loadMP(vb){   // on still frames: one request for the view and a margin, kept until the view leaves it or the month (or day) changes
+  const m = ymOf(state.t), dd = dayOn() ? state.day : 0;
+  if(!vb || (mpReady() && vb[0] >= MP.box[0] && vb[1] >= MP.box[1] && vb[2] <= MP.box[2] && vb[3] <= MP.box[3])) return;
   const dx = (vb[2] - vb[0])/4, dy = (vb[3] - vb[1])/4;
   const box = [Math.max(-180, vb[0] - dx), Math.max(-90, vb[1] - dy), Math.min(180, vb[2] + dx), Math.min(90, vb[3] + dy)].map(v => +v.toFixed(2));
-  const key = m + box; if(key === mpWant) return;
+  const key = m + dd + box; if(key === mpWant) return;
   mpWant = key; if(mpCtl) mpCtl.abort();
   const ctl = mpCtl = new AbortController();
-  fetch(`api/points.bin?month=${m}&bbox=${box}`, {signal:ctl.signal})
+  fetch(`api/points.bin?month=${m}&bbox=${box}${dd ? '&day=' + dd : ''}`, {signal:ctl.signal})
     .then(r => { if(!r.ok){ const x = new Error(r.status); x.status = r.status; throw x; } return r.arrayBuffer(); })
     .then(buf => {
       const hl = new DataView(buf).getUint32(0, true), h = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl))), n = h.n;
@@ -899,9 +906,12 @@ function loadMP(vb){   // on still frames: one request for the view and a margin
       const lon = take(Float32Array), lat = take(Float32Array), frp = take(Float32Array), minute = take(Uint16Array), day = take(Uint8Array), flags = take(Uint8Array);
       const vx = new Float32Array(n), vy = new Float32Array(n), vz = new Float32Array(n);
       for(let i=0;i<n;i++){ const v = unitOf(lon[i], lat[i]); vx[i] = v[0]; vy[i] = v[1]; vz[i] = v[2]; }
-      MP = {h, m, box, n, frp, minute, day, flags, vx, vy, vz}; dirty = true; legend();
+      MP = {h, m, d:dd, box, n, frp, minute, day, flags, vx, vy, vz}; dirty = true; legend();
+      if(dd && dayOn()) $('sensorNow').textContent = daySpan();
     })
-    .catch(err => { if(err.status === 404){ mpOff = true; legend(); } });   // this data folder has no detection files
+    .catch(err => { if(err.status !== 404) return;
+      if(dd){ mpWant = ''; toast(`No single detections for ${monthName(state.t)}.`); state.day = 0; renderTime(); }   // only this month has no file
+      else { mpOff = true; legend(); } });   // this data folder has no detection files
 }
 const SATN = {Terra:'Terra, 1 km pixel', Aqua:'Aqua, 1 km pixel', SNPP:'Suomi NPP, 375 m pixel', N20:'NOAA-20, 375 m pixel'};
 function drawMP(g){   // each detection as a square of its pixel size on the ground, at least 2.5 px
@@ -909,6 +919,22 @@ function drawMP(g){   // each detection as a square of its pixel size on the gro
   const s375 = Math.max(2.5, PC.k*RAD*0.375/111.2), s1k = Math.max(2.5, PC.k*RAD/111.2);
   if(qX.length < d.n){ qX = new Float32Array(d.n); qY = new Float32Array(d.n); qI = new Int32Array(d.n); }
   nQ = 0; l1Shown = {kind:'mp'};
+  if(d.d){   // one day: dots like one day of the last 7 days (drawPB), never smaller than the pixel on the ground
+    const smw = pbStrong() || 50, ot = state.time === 'all' ? null : state.time, cls = new Uint8Array(d.n);
+    for(let i=0;i<d.n;i++){
+      const f = d.flags[i]; if(ot && (ot === 'night') !== !!(f & 1)) continue;
+      if(state.strong && !(d.frp[i] >= smw)) continue;
+      if(!projU(d.vx[i], d.vy[i], d.vz[i], 6)) continue;
+      cls[nQ] = d.frp[i] >= smw ? 2 : d.frp[i] >= smw/4 ? 1 : 0; qX[nQ] = PX[0]; qY[nQ] = PX[1]; qI[nQ++] = i;
+    }
+    g.globalCompositeOperation = 'source-over'; g.globalAlpha = .9;
+    for(let c=0;c<3;c++){
+      const r = [1.8, 2.5, 3.3][c]*clamp(PC.k/1200, .45, 1); g.fillStyle = PTC[c]; g.beginPath();   // smaller on the whole world: a day has over 100,000 dots
+      for(let j=0;j<nQ;j++){ if(cls[j] !== c) continue; const q = Math.max(r, (wide[d.flags[qI[j]] >> 1] ? s1k : s375)/2); g.moveTo(qX[j] + q, qY[j]); g.arc(qX[j], qY[j], q, 0, 7); }
+      g.fill();
+    }
+    qSide = Math.max(6, s1k/2); return;
+  }
   g.globalCompositeOperation = 'source-over'; g.globalAlpha = .9; g.fillStyle = C.fg; g.beginPath();
   for(let i=0;i<d.n;i++){
     const f = d.flags[i]; if(tm && (tm === 'night') !== !!(f & 1)) continue;
@@ -925,11 +951,12 @@ function drawFire(g, moving, now){
   const flat = isFlat(), vb = flat ? viewBounds(0.1) : null, glow = alpha < 0.5 && !moving && LOOK[globeLook].glow;
   let lv = 0;
   if(state.live && PB && (zoom >= 1.8 || dayPick >= 0)){ drawPB(g); lv = 4; }   // one day has no 0.5 degree grid: single detections at every zoom
+  else if(dayOn()){ if(!moving || !mpReady()) loadMP(dayBox()); if(mpReady()){ drawMP(g); lv = 5; } }   // one day of the record: no monthly squares
   else if(!state.live && state.view !== 'trust' && !tilesOff){
     lv = tileLv = levelFor(PC.k, true);
     const pts = lv === 3 && mpOn();
     if(pts && !moving) loadMP(tileView());
-    const mp = pts && MP && MP.m === ymOf(state.t);
+    const mp = pts && mpReady();
     if(lv === 0){ cells0(vb, null); sqFlush(g, 0, SQ.n, state.view !== 'anom', 1, glow); tileStat = [0, 0]; }
     else drawTiles(g, lv, now, mp ? 0.45 : 1);
     if(mp){ drawMP(g); lv = 5; }
@@ -958,16 +985,26 @@ let perfN = 0;
 const perfBox = PERF ? Object.assign(document.createElement('p'), {className:'perf'}) : null;
 if(perfBox) wrap.appendChild(perfBox);
 const isMoving = now => !!fly || !!pinch || !!(dragging && dragging.moved) || now - lastWheel < 140 || (spin && !dragging && !drawMode);
+// The last sharp base image can stand in for the moving flat map only where moving and scaling it is exact. It is not when the
+// view turned in latitude, or when the whole world is in view and wraps around: then the fires moved and the land stayed behind.
+const BQ = [[.1, .1], [.9, .9]];
+function baseFits(){
+  if(2*Math.PI*PC.k < W) return false;
+  const p = projection(baseView.c), s = PC.k/baseView.k; if(!p) return false;
+  return BQ.every(([fx, fy], i) => { const ll = baseView.q[i], q = ll && !isNaN(ll[0]) && projection(ll);
+    return q && Math.hypot(q[0] - (p[0] + s*W*(fx - .5)), q[1] - (p[1] + s*H*(fy - .5))) < 2; });
+}
 function draw(now = performance.now()){
   if(!W) return;
   const t0 = performance.now(), moving = isMoving(now);
   frameRot();
   const r = projection.rotate(), sig = `${r[0]},${r[1]},${PC.k},${alpha},${W},${H},${dpr},${baseVer}`;
   if(!moving){   // still: full detail, drawn once into the cache, then only copied
-    if(sig !== baseSig){ drawBase(bctx, bpath, true, false); baseSig = sig; baseView = {k:PC.k, alpha, c:projection.invert([W/2, H/2])}; baseMode = 'full'; }
+    if(sig !== baseSig){ drawBase(bctx, bpath, true, false); baseSig = sig; baseMode = 'full';
+      baseView = {k:PC.k, alpha, c:projection.invert([W/2, H/2]), q:BQ.map(([fx, fy]) => projection.invert([W*fx, H*fy]))}; }
     else baseMode = 'blit';
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.drawImage(baseC, 0, 0);
-  } else if(alpha > 0.999 && baseView && baseView.alpha > 0.999 && baseView.c && !isNaN(baseView.c[0])){
+  } else if(alpha > 0.999 && baseView && baseView.alpha > 0.999 && baseView.c && !isNaN(baseView.c[0]) && baseFits()){
     // flat and moving: coarse land underneath, the last sharp image moved and scaled onto the current view
     drawBase(ctx, path, false, true);
     const p = projection(baseView.c), s = PC.k/baseView.k;
@@ -975,6 +1012,7 @@ function draw(now = performance.now()){
     baseMode = 'transform';
   } else { drawBase(ctx, path, false, false); baseMode = 'direct 110m'; }
   drawFire(ctx, moving, now);
+  const home = state.sel.kind === 'world' && zoom <= (flatMap ? flatFit()*1.05 : 1.2); if($('worldBtn').hidden !== home) $('worldBtn').hidden = home;   // the way back, whenever you are not looking at the whole planet
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.setLineDash([5, 4]); ctx.strokeStyle = C.accent; ctx.lineWidth = 1.5;
   if(drawRect) ctx.strokeRect(drawRect.x0, drawRect.y0, drawRect.x1 - drawRect.x0, drawRect.y1 - drawRect.y0);
@@ -1025,7 +1063,9 @@ function tick(now){
   } else if(spin && !dragging && !drawMode){
     const r = projection.rotate(); projection.rotate([r[0] + dt*0.004, r[1]]); dirty = true;
   }
-  if(playing){ playAcc += dt; if(playAcc > 110/PLAY.speed){ playAcc = 0; if(state.t >= PLAY.to){ if(PLAY.loop) setT(PLAY.from); else setPlaying(false); } else setT(state.t + 1); } }
+  if(playing && dayOn()){ playAcc += dt; if(playAcc > 110/PLAY.speed && mpReady()){ playAcc = 0;   // one day per step, each once its points are in
+    if(state.t >= PLAY.to && state.day >= dimOf(state.t)){ if(PLAY.loop){ state.day = 1; setT(PLAY.from); } else setPlaying(false); } else stepDay(1); } }
+  else if(playing){ playAcc += dt; if(playAcc > 110/PLAY.speed){ playAcc = 0; if(state.t >= PLAY.to){ if(PLAY.loop) setT(PLAY.from); else setPlaying(false); } else setT(state.t + 1); } }
   const mv = isMoving(now);
   if(mv) lastMove = now; else if(wasMoving) dirty = true;   // movement ended: one full-detail frame
   wasMoving = mv;
@@ -1262,7 +1302,7 @@ function finishPolygon(){
 }
 function clearPlace(){
   $('q').value = ''; toast('');
-  flyTo(projection.rotate()[0], -20, 1);
+  flyTo(projection.rotate()[0], flatMap ? 0 : -20, flatMap ? flatFit() : 1);
   select({kind:'world', name:'Earth'}, null);
 }
 function renderCrumb(){
@@ -1402,11 +1442,15 @@ function renderDays(){   // the ruler in the last 7 days: the left end is all da
 }
 function renderTime(){
   const t = state.t;
-  $('readout').textContent = state.live ? liveLabel() : `${MONTHS[monOf(t)]} ${yearOf(t)}`;
+  $('readout').textContent = state.live ? liveLabel() : `${dayOn() ? state.day + ' ' : ''}${MONTHS[monOf(t)]} ${yearOf(t)}`;
   $('tRange').value = t;
+  const tl = state.live ? T-1 : t, dd = $('dDay'), nd = dimOf(tl);   // the dock's day, month and year follow the map
+  if(dd.length !== nd + 1){ dd.length = 1; for(let i=1;i<=nd;i++) dd.add(new Option(i, i)); }
+  dd.value = state.live ? 0 : state.day; $('dMon').value = monOf(tl); $('dYear').value = yearOf(tl);
   const days = state.live && !!PB;   // in the last 7 days the slider and the ruler pick a day
   $('tRange').hidden = $('ruler').hidden = days; $('dRange').hidden = $('dRuler').hidden = !days; if(days) renderDays();
   $('sensorNow').textContent = state.live ? 'Newer satellite, first numbers' + (!state.harm ? ', as reported' : state.unit === 'viirs' ? '' : ', strict count')
+    : dayOn() ? daySpan()
     : state.harm ? UNIT[state.unit].now(t)
     : 'Counts as reported' + (months && months[t].raw.n20 + months[t].raw.snpp > 0 ? ', newer satellites included' : '');
   syncWhen(); legend(); dirty = true; renderRuler();
@@ -1684,7 +1728,12 @@ function renderCheck(){
 }
 
 /* ---------- controls ---------- */
-function setT(t){ state.t = clamp(t, 0, T-1); if(state.t !== T-1) state.pick = true; if(state.live) setLive(false); else renderTime(); }
+function setT(t){ state.t = clamp(t, 0, T-1); state.day = Math.min(state.day, dimOf(state.t)); if(state.t !== T-1) state.pick = true; if(state.live) setLive(false); else renderTime(); }
+function stepDay(k){   // one day back or on, rolling into the next or last month
+  let t = state.t, d = state.day + k;
+  if(d < 1){ if(t <= 0) return; d = dimOf(--t); } else if(d > dimOf(t)){ if(t >= T-1) return; t++; d = 1; }
+  state.day = d; setT(t);
+}
 function setPlaying(p){
   if(p){ setLive(false); if(state.t < PLAY.from || state.t >= PLAY.to) setT(PLAY.from); }
   playing = p; playAcc = 0; $('play').innerHTML = p ? `<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2.5 1.5h2.4v9H2.5zM7.1 1.5h2.4v9H7.1z" fill="currentColor"/></svg> Pause` : `<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M3 1.5l7 4.5-7 4.5z" fill="currentColor"/></svg> Play`;
@@ -1742,7 +1791,8 @@ function legend(){
   const tm = state.live || gTime() !== 'all' ? {all:'', day:'day ', night:'night '}[state.time] : '', sq = [50, 25, 10, 5, 5, 5][fireLevel] || 50;
   const dots = fireLevel === 5 && MP ? `<span class="lstep"><span class="box" style="background:${C.fg}"></span>one ${tm}detection, any satellite${MP.h.truncated ? ` (the strongest ${fmt(MP.n)})` : ''}</span>` : '';
   const est = state.harm && UNIT[state.unit].est(state.t) ? '<span class="lest">Estimated month, not measured</span>' : '';
-  $('legend').innerHTML = state.view === 'trust' && !state.live
+  $('legend').innerHTML = dayOn() ? `<span class="lstep"><span class="dotk" style="background:${PTC[1]}"></span>One ${tm}fire detection, any satellite. Single days are not adjusted between satellites.</span>`
+    : state.view === 'trust' && !state.live
     ? !TR ? (TRS ? 'No confidence map for this count yet. Rebuilding the data adds it.' : 'Loading the confidence map…')
       : `How far off the ${state.unit === 'viirs' ? 'monthly estimate from the older satellites' : 'adjusted monthly count'} for an area of about ${kmOf(TR.deg)} km was in test years: ` + TRUST.map(s => `<span class="lstep"><span class="box" style="background:${s[1]}"></span>${s[2]}</span>`).join('')
         + '<span class="lstep"><span class="box hatch"></span>too few fires to test</span>'
@@ -1763,7 +1813,7 @@ function saveHash(){
   p.set('a', s.kind === 'world' ? 'world' : s.kind === 'country' ? 'c:' + s.name : s.kind === 'state' ? `s:${s.country}|${s.name}`
     : s.kind === 'box' ? 'b:' + [s.box.w, s.box.s, s.box.e, s.box.n].join(',') : 'p:' + s.polygon.coordinates[0].map(q => q.join(' ')).join(';'));
   if(s.kind === 'box' && s.label) p.set('n', s.label);
-  p.set('t', state.live ? 'live' : ymOf(state.t)); p.set('map', state.view); p.set('only', state.time); p.set('counts', {viirs:'viirs', aqua:'strict', raw:'raw'}[countsNow()]);
+  p.set('t', state.live ? 'live' : ymOf(state.t) + (dayOn() ? '-' + String(state.day).padStart(2, '0') : '')); p.set('map', state.view); p.set('only', state.time); p.set('counts', {viirs:'viirs', aqua:'strict', raw:'raw'}[countsNow()]);
   ownHash = '#' + p;
   try { history.replaceState(null, '', ownHash); } catch(e){}
 }
@@ -1777,7 +1827,8 @@ async function restore(){
     const cn = p.get('counts'), counts = ['raw', 'reported'].includes(cn) ? 'raw' : cn === 'strict' ? 'aqua' : UNITS[0];   // old links: adjusted, reported
     if(counts !== countsNow()) setCounts(counts);
     const tt = p.get('t') || '', f = p.get('only'), live = tt === 'live' && HAS.live;
-    if(/^\d{4}-\d{2}$/.test(tt)){ state.t = clamp(tAt(tt), 0, T-1); state.pick = state.t !== T-1; }
+    if(/^\d{4}-\d{2}(-\d{2})?$/.test(tt)){ state.t = clamp(tAt(tt), 0, T-1); state.pick = state.t !== T-1; }
+    state.day = tt.length === 10 && !mpOff ? clamp(+tt.slice(8) || 0, 0, dimOf(state.t)) : 0;
     if(live !== state.live) setLive(live);
     state.time = ['day', 'night'].includes(f) && (HAS.night || live) ? f : 'all';   // the area selection below reloads everything for it
     syncTimeControls(); if(state.live && !liveCells.has(lcKey())) loadCells();
@@ -1946,7 +1997,7 @@ document.querySelectorAll('input[name=time]').forEach(r => r.addEventListener('c
 $('strong').onchange = e => { state.strong = e.target.checked; dirty = true; lastCheck = 0; };
 $('cGrid').onclick = $('cRings').onclick = e => { state.cal = e.currentTarget.id === 'cGrid' ? 'grid' : 'rings';
   $('cGrid').setAttribute('aria-pressed', state.cal === 'grid'); $('cRings').setAttribute('aria-pressed', state.cal === 'rings'); if(months) renderCalendar(); };
-$('wholeBtn').onclick = clearPlace;
+$('wholeBtn').onclick = $('worldBtn').onclick = clearPlace;
 $('wLive').onclick = () => { setPlaying(false); setLive(true); };
 $('wLatest').onclick = () => { setPlaying(false); state.pick = false; setT(T-1); };
 $('wPick').onclick = () => { setPlaying(false); state.pick = true; if(state.live) setLive(false); else renderTime(); $('pMonth').focus(); };
@@ -1984,8 +2035,9 @@ function renderRuler(){
 }
 // playback and fire filter card on the map
 PLAY.to = T - 1;
-for(const id of ['pfM', 'ptM']) MONTHS.forEach((m, i) => $(id).add(new Option(m.slice(0, 3), i)));
-for(const id of ['pfY', 'ptY']) YEARS.forEach(y => $(id).add(new Option(y, y)));
+for(const id of ['pfM', 'ptM', 'dMon']) MONTHS.forEach((m, i) => $(id).add(new Option(m.slice(0, 3), i)));
+for(const id of ['pfY', 'ptY', 'dYear']) YEARS.forEach(y => $(id).add(new Option(y, y)));
+$('dDay').disabled = mpOff;
 const putPlay = () => { $('pfM').value = monOf(PLAY.from); $('pfY').value = yearOf(PLAY.from); $('ptM').value = monOf(PLAY.to); $('ptY').value = yearOf(PLAY.to); };
 // one time range drives playback, the calendar's highlighted years and the download years
 function setRange(a, b, preset){
@@ -2001,8 +2053,9 @@ const readPlay = () => setRange(tOf(+$('pfY').value, +$('pfM').value), tOf(+$('p
 $('presets').addEventListener('click', e => { const b = e.target.closest('button'); if(!b) return; const p = b.dataset.preset, ly = yearOf(T-1);
   if(p === 'all') setRange(0, T-1, 'all'); else if(p === 'custom'){ setRange(PLAY.from, PLAY.to, 'custom'); $('pfM').focus(); }
   else setRange(tOf(ly - +p + 1, 0), T-1, p); });
-$('tPrev').onclick = () => { setPlaying(false); setT((state.live ? T : state.t) - 1); };
-$('tNext').onclick = () => { setPlaying(false); if(!state.live) setT(state.t + 1); };
+$('tPrev').onclick = () => { setPlaying(false); if(dayOn()) stepDay(-1); else setT((state.live ? T : state.t) - 1); };
+$('tNext').onclick = () => { setPlaying(false); if(dayOn()) stepDay(1); else if(!state.live) setT(state.t + 1); };
+['dDay', 'dMon', 'dYear'].forEach(id => $(id).addEventListener('change', () => { setPlaying(false); state.day = +$('dDay').value; setT(tOf(+$('dYear').value, +$('dMon').value)); }));
 ['pfM', 'pfY', 'ptM', 'ptY'].forEach(id => $(id).addEventListener('change', readPlay));
 putPlay(); renderRuler();
 $('speedSeg').addEventListener('click', e => { const b = e.target.closest('button'); if(!b) return; PLAY.speed = +b.dataset.speed;
@@ -2072,18 +2125,11 @@ $('searchForm').addEventListener('submit', e => {
   if(!qHits.length) qHits = searchHits($('q').value);
   if(!pickHit(qHits[Math.max(0, qActive)])) toast(`No country or loaded state matches "${$('q').value.trim()}".`);
 });
-const chip = (label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'chip'; b.textContent = label; b.onclick = fn; $('chips').appendChild(b); };
-['Mexico','Brazil','Zambia','Indonesia','Australia','Canada'].forEach(n => { const hit = names.find(x => x[0] === n); if(hit) chip(n, () => selectCountry(hit[1])); });
-chip('Chihuahua (box)', () => { $('area').open = true; selectBox({n:32, s:25.5, w:-109, e:-103}, 'Chihuahua, Mexico (box)'); });
-// quick places in the top bar for Presentation
-const quick = (label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'chip'; b.textContent = label; b.onclick = fn; $('quick').appendChild(b); };
-quick('Whole planet', () => $('wholeBtn').click());
-['Mexico', 'Brazil', 'Australia'].forEach(n => { const hit = names.find(x => x[0] === n); if(hit) quick(n, () => selectCountry(hit[1])); });
 // display: borders, names, reset
 $('optStates').addEventListener('change', e => { disp.states = e.target.checked; bump(); });
 $('optPlaces').addEventListener('change', e => { disp.places = e.target.checked; bump(); });
 $('resetDisp').onclick = () => {
-  setGlobeLook('standard'); setView('count');
+  setGlobeLook('minimal'); setView('count');
   for(const [id, v] of [['dens', 0], ['gain', 100]]){ $(id).value = v; $(id).dispatchEvent(new Event('input')); }
   for(const id of ['optStates', 'optPlaces']){ $(id).checked = true; $(id).dispatchEvent(new Event('change')); }
 };

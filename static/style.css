@@ -72,9 +72,6 @@ details.tb.end .pop{left:auto;right:0}
 .opt input{margin:0;accent-color:var(--fire-mid)}
 .opt-help{grid-column:2;font-size:13px;color:var(--muted)}
 .opt:has(input:disabled){opacity:.5;cursor:default}
-.chips{display:flex;flex-wrap:wrap;gap:2px 16px}
-.chip{font:500 14px var(--body);color:var(--muted);background:none;border:0;padding:4px 0;cursor:pointer;min-height:28px}
-.chip:hover{color:var(--fg);text-decoration:underline;text-underline-offset:3px}
 .area{border-top:1px solid var(--line);padding-top:8px}
 .area summary{cursor:pointer;font-size:14px}
 .area[open] summary{margin-bottom:10px}
@@ -312,8 +309,6 @@ dialog a{color:var(--fg)}
 .app.mode-res .mid{padding:0 16px}
 
 /* top bar */
-.quick{display:flex;flex-wrap:wrap;gap:0 14px}
-.app.mode-res .quick{display:none}
 .tools-open{display:none}
 .mode-toggle{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;color:var(--muted);white-space:nowrap}
 .switch{position:relative;width:38px;height:22px;padding:0;border:1px solid var(--line-2);border-radius:11px;background:var(--surface-2);cursor:pointer;flex:none}
@@ -344,7 +339,7 @@ dialog a{color:var(--fg)}
 .lt{width:20px;height:20px;display:grid;place-items:center;font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:2px;flex:none}
 .sb-in{display:flex;flex-direction:column;gap:9px;padding:0 12px 14px 0}
 .range-grid{display:grid;grid-template-columns:auto 1fr 1fr;gap:6px;align-items:center}
-.range-grid select{background:var(--surface);border:1px solid var(--line);color:var(--fg);border-radius:var(--r);padding:4px 6px;font:inherit;font-size:14px;min-height:30px;min-width:0}
+.range-grid select,.ctl select{background:var(--surface);border:1px solid var(--line);color:var(--fg);border-radius:var(--r);padding:4px 6px;font:inherit;font-size:14px;min-height:30px;min-width:0}
 .ptag{display:inline-block;font-size:11px;font-weight:600;color:#d9a54a;border:1px solid rgba(217,165,74,.5);border-radius:2px;padding:0 5px;margin-right:4px}
 .crumb{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
 .crumb button{font:500 13px var(--body);color:var(--fg);background:none;border:1px solid var(--line);border-radius:2px;padding:2px 8px;cursor:pointer}
@@ -434,6 +429,8 @@ dialog a{color:var(--fg)}
 .flat-sw{position:absolute;top:48px;left:10px;z-index:2;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);background:rgba(16,18,20,.84);border:1px solid var(--line);border-radius:var(--r);padding:4px 10px 4px 6px}
 .flat-sw:has([aria-checked="true"]){color:var(--fg)}
 .app.bare .flat-sw{display:none}
+.world-btn{position:absolute;top:86px;left:10px;z-index:2}
+.app.bare .world-btn,.app.embed .world-btn{display:none}
 @media (max-width:899.98px){
   .flat-sw{top:46px;font-size:12px}
   .legend{top:auto;bottom:10px;left:auto;right:10px;max-width:42%;font-size:11px}
