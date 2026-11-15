@@ -396,21 +396,27 @@ dialog a{color:var(--fg)}
 .app.mode-res .ruler-wrap{grid-column:1 / -1;grid-row:2}
 
 @media (max-width:1199.98px){
-  .app.mode-res{grid-template-columns:270px minmax(0,1fr) minmax(300px,340px)}
-  .app.mode-res.panel-off{grid-template-columns:270px minmax(0,1fr) 44px}
   .dock{grid-template-columns:auto minmax(0,1fr) auto}
   .ruler-wrap{grid-column:1 / -1;grid-row:2}
 }
-@media (max-width:899.98px){
-  .app.mode-res,.app.mode-res.side-off,.app.mode-res.panel-off,.app.mode-res.side-off.panel-off{grid-template-areas:"bar" "mid" "panel";grid-template-columns:minmax(0,1fr)}
-  .app.mode-res .mid{padding:0}
-  .app.mode-res .tools-open{display:inline-flex;order:1}
-  .mode-toggle{order:1}
+@media (max-width:1199.98px){   /* three columns would leave the map under 400 px: the tools column becomes a drawer, opened with the Tools button */
+  .app.mode-res,.app.mode-res.side-off{grid-template-areas:"bar bar" "mid panel";grid-template-columns:minmax(0,1fr) minmax(300px,340px)}
+  .app.mode-res.panel-off,.app.mode-res.side-off.panel-off{grid-template-columns:minmax(0,1fr) 44px}
+  .app.mode-res .mid{padding:0 16px 0 0}
+  .app.mode-res .tools-open{display:inline-flex}
+  .app.mode-res .dock-r{grid-column:1 / -1;justify-content:space-between}
+  .app.mode-res .when .readout{font-size:17px;overflow:hidden;text-overflow:ellipsis}
   .sidebar{position:fixed;top:0;bottom:0;left:0;width:min(340px,88vw);z-index:60;padding-left:16px;transition:transform .2s ease;box-shadow:10px 0 30px rgba(0,0,0,.5)}
   .app.side-off .sidebar{transform:translateX(-110%);box-shadow:none}
   .app.side-off .sb-body,.app.side-off .sb-title{display:block}
   .app.side-off .sb-head{flex-direction:row;padding:12px 12px 10px 0;border-bottom:1px solid var(--line)}
   .sb-rail,.app.side-off .sb-rail{display:none}
+}
+@media (max-width:899.98px){
+  .app.mode-res,.app.mode-res.side-off,.app.mode-res.panel-off,.app.mode-res.side-off.panel-off{grid-template-areas:"bar" "mid" "panel";grid-template-columns:minmax(0,1fr)}
+  .app.mode-res .mid{padding:0}
+  .app.mode-res .tools-open{order:1}
+  .mode-toggle{order:1}
   .mcard{width:min(240px,calc(100% - 24px));padding:10px 12px} .mc-big{font-size:26px}
   .legend{top:10px;bottom:auto;left:10px;right:auto;max-width:calc(100% - 140px)}
   .dock{grid-template-columns:auto minmax(0,1fr)}

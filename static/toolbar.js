@@ -3,7 +3,7 @@
 (() => {
   const $ = id => document.getElementById(id), app = $('app');
   const store = {get(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }, set(k, v){ try { localStorage.setItem(k, v); } catch(e){} }};
-  const narrow = matchMedia('(max-width: 899.98px)');
+  const narrow = matchMedia('(max-width: 1199.98px)');   // the same width as the drawer rules in style.css
   const relayout = () => dispatchEvent(new Event('resize'));   // the globe follows its box through a ResizeObserver; this is a nudge
 
   // research tools: fold to a rail of section letters (desktop) or slide away as a drawer (phones)
