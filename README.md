@@ -1,4 +1,4 @@
-# Fire Pulse
+# blazeBridge
 
 Where it burns, and whether that is normal. One consistent record of satellite fire detections from
 2000 to today, for any country, state or drawn area, built for a fire manager. Made for the NASA

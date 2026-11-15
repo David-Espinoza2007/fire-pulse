@@ -1,4 +1,4 @@
-# Fire Pulse as a container (written for a Hugging Face Docker Space; see deploy_space.py).
+# blazeBridge as a container (written for a Hugging Face Docker Space; see deploy_space.py).
 # The data is not in the image source: the build downloads it from the dataset repository named in the file DATA_REPO.
 FROM python:3.13-slim
 RUN useradd -m -u 1000 user
