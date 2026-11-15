@@ -369,6 +369,7 @@ def test_units_old_data(client, monkeypatch):
     c, app = client   # data built before VIIRS units: aqua only, as before
     monkeypatch.setattr(app, "VV", None)
     monkeypatch.setattr(app, "UNITS", ["aqua"])
+    monkeypatch.setattr(app, "MEMO", {})   # answers kept under the other settings must not be served here, or stay after
     assert c.get("/api/meta").json()["units"] == ["aqua"] and c.get("/api/meta").json()["viirs"] is None
     r = c.get("/api/calendar", params={"country": "Mexico"}).json()
     assert r["unit"] == "aqua" and r["baseline"] == [2003, 2020]
@@ -406,8 +407,24 @@ def test_sea_filter(client, tmp_path):
         assert c.get("/api/live", params={"bbox": "-126,19,-124,21"}).json()["sea_removed"] == 1 and c.get("/api/live", params={"bbox": BOX}).json()["sea_removed"] == 0
         assert sum(x[2] for x in c.get("/api/live/cells").json()["cells"]) == 2
         app.live_state["sea"] = False   # filter off (no states or no spatial extension): the count is null
+        app.MEMO.clear()   # the server sets this only while it loads the week; a kept answer would hide the switch
         assert c.get("/api/live", params={"country": "World"}).json()["sea_removed"] is None
     finally:
         app.LIVE_URL, app.LIVE_FILE = old
         app.live_state["loaded"] = 0
     assert len(pts(c)) == len(ROWS) - 1   # the regular fixture file again
+
+
+def test_memo(client, monkeypatch):
+    c, app = client   # the same area asked again is answered from memory; another area and a CSV download are not
+    monkeypatch.setattr(app, "MEMO", {})
+    first = c.get("/api/calendar", params={"country": "Mexico"}).json()
+    kept = dict(app.MEMO)
+    assert len(kept) == 1
+    assert c.get("/api/calendar", params={"country": "Mexico"}).json() == first and app.MEMO == kept
+    assert all(app.MEMO[k] is kept[k] for k in kept)
+    c.get("/api/calendar", params={"bbox": BOX})
+    assert len(app.MEMO) == 2
+    assert c.get("/api/calendar", params={"country": "Mexico", "format": "csv"}).text.startswith("month,") and len(app.MEMO) == 2
+    c.get("/api/live", params={"country": "Mexico"}), c.get("/api/live", params={"country": "Mexico"})
+    assert len(app.MEMO) == 3

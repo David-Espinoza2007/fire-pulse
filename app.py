@@ -81,6 +81,27 @@ LIVE_C = "(SELECT * FROM live LEFT JOIN cell_country USING (cell_x, cell_y))"
 DET_C = "(SELECT * FROM live_det LEFT JOIN cell_country USING (cell_x, cell_y))"
 TIMES = {"all": None, "day": "daynight = 'D'", "night": "daynight = 'N'"}
 live_lock, live_state = threading.Lock(), {"loaded": 0.0}
+MEMO = {}
+
+
+def memo(fresh=False):
+    """Keep the answers for the last 256 areas. A page that asks for the same area in a loop, or many viewers of
+    one country, then cost nothing. On 15 Nov 2026 one such page made every other request take 30 to 55 seconds."""
+    def deco(fn):
+        def inner(*args):
+            if fresh:
+                load_live()   # renews the last 7 days when they are over an hour old; the key below then changes
+            key = (fn.__name__, live_state["loaded"] if fresh else 0, json.dumps(args, sort_keys=True))
+            if key not in MEMO:
+                r = fn(*args)
+                if isinstance(r, Response):   # a CSV download: not kept
+                    return r
+                if len(MEMO) >= 256:
+                    MEMO.pop(next(iter(MEMO)), None)
+                MEMO[key] = r
+            return MEMO[key]
+        return inner
+    return deco
 
 
 def load_live():
@@ -252,6 +273,7 @@ def viirs_month(iso, v):
     return source, iso >= v["start"], table
 
 
+@memo()
 def calendar(country, bbox, polygon, start, end, method, fmt, time="all", unit=None):
     if method not in ("table", "ratio"):
         raise HTTPException(422, "method must be table or ratio")
@@ -319,6 +341,7 @@ def calendar_post(body: dict = Body(...)):
                     body.get("method", "table"), body.get("format", "json"), body.get("time", "all"), body.get("unit"))
 
 
+@memo(fresh=True)
 def live(country, bbox, polygon, time="all", unit=None):
     state = load_live()
     tc = TIMES[parse_time(time)]
@@ -524,6 +547,7 @@ def label_for(lon, lat):
     return f"{round(km)} km {COMPASS[round(bearing / 45) % 8]} of {name}"
 
 
+@memo(fresh=True)
 def live_places(country, bbox, polygon, time, unit=None):
     state = load_live()
     tc = TIMES[parse_time(time)]
