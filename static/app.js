@@ -148,6 +148,9 @@ function stateAt(lon, lat){
 const hits = (b, v) => b[0] <= v[2] && b[2] >= v[0] && b[1] <= v[3] && b[3] >= v[1];
 
 /* ---------- colour ---------- */
+// colour vision option (top bar): style.css swaps the ramp colours under html[data-cvd]
+const CVD = (() => { const v = new URLSearchParams(location.search).get('colors') ?? (() => { try { return localStorage.getItem('fp-cvd'); } catch(e){ return null; } })(); return ['rg', 'by'].includes(v) ? v : ''; })();
+if(CVD) document.documentElement.dataset.cvd = CVD;
 const C = {};
 ['bg','ocean','land','land-line','accent','fg','muted','surface','surface-2','fire-lo','fire-mid','fire-hi','cool','neutral','warm','line'].forEach(k => C[k] = cssv('--'+k));
 const LUTN = 64;
@@ -2145,6 +2148,11 @@ $('searchForm').addEventListener('submit', e => {
 // display: borders, names, reset
 $('optStates').addEventListener('change', e => { disp.states = e.target.checked; bump(); });
 $('optPlaces').addEventListener('change', e => { disp.places = e.target.checked; bump(); });
+// shortcut: the colours are read once at load, so a change reloads the page (the address keeps the view); redraw in place if the reload gets slow
+$('cvd').value = CVD;
+$('cvd').onchange = e => { const v = e.target.value || 'standard', u = new URL(location.href);
+  try { localStorage.setItem('fp-cvd', v); } catch(err){}
+  u.searchParams.set('colors', v); location.replace(u); };
 $('resetDisp').onclick = () => {
   setGlobeLook('minimal'); setView('count');
   for(const [id, v] of [['dens', 0], ['gain', 100]]){ $(id).value = v; $(id).dispatchEvent(new Event('input')); }

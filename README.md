@@ -172,6 +172,12 @@ monthly squares, only that day's detections, at every zoom, like one day of the 
 is the local solar date of each detection. Single days are raw detections from all satellites: they
 are not adjusted between satellites, so they are not comparable across the years like the monthly count.
 
+The colour menu in the top bar has two sets for colour-blind readers: yellow against blue for red-green
+colour blindness (protanopia, deuteranopia) and red against cyan for blue-yellow (tritanopia). In every
+set the fire ramp gets lighter with more fire. The sets were checked with the colour-blindness
+simulation of the browser's developer tools, not with colour-blind readers. `?colors=rg` or `?colors=by`
+in the address selects a set.
+
 ## Files
 
 - `harmonize.py` - the method, as DuckDB SQL: grid, conversion tables, calibration, ratios in both directions.

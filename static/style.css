@@ -13,6 +13,11 @@
   --body:"Source Sans 3","Segoe UI",system-ui,sans-serif;
   --r:3px;
 }
+/* Colour vision options (top bar). Each ramp gets lighter from little to much fire and runs along the colour axis that stays visible:
+   yellow against blue for red-green colour blindness (red and orange look dark with protanopia), red against cyan for blue-yellow. */
+:root[data-cvd="rg"]{--fire-lo:#5c5200; --fire-mid:#f0d000; --fire-hi:#fffde6; --cool:#4a9eea; --warm:#f0d000}
+:root[data-cvd="by"]{--fire-lo:#5a0f1a; --fire-mid:#f0473a; --fire-hi:#ffe3de; --cool:#19b0b8; --warm:#f0473a}
+.cvd select{max-width:150px;text-overflow:ellipsis}
 [hidden]{display:none!important}
 *{box-sizing:border-box}
 html,body{height:100%}
