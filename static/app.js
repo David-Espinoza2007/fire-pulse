@@ -904,7 +904,7 @@ function drawPB(g){
 }
 
 /* ---------- a past month at the closest zoom: its single detections, asked for by view (layout in app.py, /api/points.bin) ---------- */
-let MP = null, mpWant = '', mpCtl = null, mpOff = !HAS.points;
+let MP = null, mpWant = '', mpCtl = null, mpBusy = '', mpOff = !HAS.points;
 const mpOn = () => !mpOff && !playing && isFlat() && PC.k*0.05*RAD >= 12;   // a square of 5 km is at least 12 px wide
 const dayOn = () => state.day > 0 && !state.live && !mpOff;   // one day of the record: its raw detections at every zoom
 const mpReady = () => MP && MP.m === ymOf(state.t) && MP.d === (dayOn() ? state.day : 0);
@@ -918,7 +918,7 @@ function loadMP(vb){   // on still frames: one request for the view and a margin
   const dx = (vb[2] - vb[0])/4, dy = (vb[3] - vb[1])/4;
   const box = [Math.max(-180, vb[0] - dx), Math.max(-90, vb[1] - dy), Math.min(180, vb[2] + dx), Math.min(90, vb[3] + dy)].map(v => +v.toFixed(2));
   const key = m + dd + box; if(key === mpWant) return;
-  mpWant = key; if(mpCtl) mpCtl.abort();
+  mpWant = key; mpBusy = m + dd; if(mpCtl) mpCtl.abort();
   const ctl = mpCtl = new AbortController();
   fetch(`api/points.bin?month=${m}&bbox=${box}${dd ? '&day=' + dd : ''}`, {signal:ctl.signal})
     .then(r => { if(!r.ok){ const x = new Error(r.status); x.status = r.status; throw x; } return r.arrayBuffer(); })
@@ -929,10 +929,12 @@ function loadMP(vb){   // on still frames: one request for the view and a margin
       const lon = take(Float32Array), lat = take(Float32Array), frp = take(Float32Array), minute = take(Uint16Array), day = take(Uint8Array), flags = take(Uint8Array);
       const vx = new Float32Array(n), vy = new Float32Array(n), vz = new Float32Array(n);
       for(let i=0;i<n;i++){ const v = unitOf(lon[i], lat[i]); vx[i] = v[0]; vy[i] = v[1]; vz[i] = v[2]; }
-      MP = {h, m, d:dd, box, n, frp, minute, day, flags, vx, vy, vz}; dirty = true; legend();
+      MP = {h, m, d:dd, box, n, frp, minute, day, flags, vx, vy, vz}; mpBusy = ''; dirty = true; legend();
       if(dd && dayOn()) $('sensorNow').textContent = daySpan();
     })
-    .catch(err => { if(err.status !== 404) return;
+    .catch(err => { if(mpCtl !== ctl) return;   // replaced by a newer request
+      if(err.status !== 404){ setTimeout(() => { if(mpCtl === ctl){ mpWant = mpBusy = ''; dirty = true; } }, 3000); return; }   // server busy or restarting: try again
+      mpBusy = '';
       if(dd){ mpWant = ''; toast(`No single detections for ${monthName(state.t)}.`); state.day = 0; renderTime(); }   // only this month has no file
       else { mpOff = true; legend(); } });   // this data folder has no detection files
 }
@@ -975,7 +977,8 @@ function drawFire(g, moving, now){
   const flat = isFlat(), vb = flat ? viewBounds(0.1) : null, glow = alpha < 0.5 && !moving && LOOK[globeLook].glow;
   let lv = 0;
   if(state.live && PB && (zoom >= 1.8 || dayPick >= 0)){ drawPB(g); lv = 4; }   // one day has no 0.5 degree grid: single detections at every zoom
-  else if(dayOn()){ if(!moving || !mpReady()) loadMP(dayBox()); if(mpReady()){ drawMP(g, moving); lv = 5; } }   // one day of the record: no monthly squares
+  else if(dayOn()){ if(!moving || (!mpReady() && mpBusy !== ymOf(state.t) + state.day)) loadMP(dayBox());   // while the map moves, one request at a time: the server finishes every request, also the ones the page drops
+    if(mpReady()){ drawMP(g, moving); lv = 5; } }   // one day of the record: no monthly squares
   else if(!state.live && state.view !== 'trust' && !tilesOff){
     lv = tileLv = levelFor(PC.k, true);
     const pts = lv === 3 && mpOn();
