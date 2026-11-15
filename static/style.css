@@ -436,3 +436,13 @@ dialog a{color:var(--fg)}
   .legend{top:auto;bottom:10px;left:auto;right:10px;max-width:42%;font-size:11px}
   .mcard{width:54%;min-width:0}
 }
+
+/* ---------- Presentation: the map runs edge to edge, and the search sits in the middle of the bar ---------- */
+@media (min-width:900px){
+  .app.mode-pres{padding-left:0;padding-right:0}
+  .app.mode-pres .bar,.app.mode-pres .dock{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+  .app.mode-pres .globe{border-radius:0}
+  .app.mode-pres .brand{flex:1 1 0}
+  .app.mode-pres .search{flex:0 1 480px}
+  .app.mode-pres .mode-toggle{flex:1 1 0;justify-content:flex-end}
+}

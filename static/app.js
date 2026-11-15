@@ -231,7 +231,7 @@ let qX = new Float32Array(0), qY = new Float32Array(0), qI = new Int32Array(0), 
 const NB = 12;
 // flat map switch: the same projection held fully flat (alpha = 1, the whole world in view at the smallest zoom, north up)
 let flatMap = false;
-const flatFit = () => Math.min(W/(2*Math.PI), H/Math.PI)*0.98/S0;
+const flatFit = () => Math.min(W/(2*Math.PI), 1.3*H/Math.PI)/S0;   // the world fills the width; on a wide screen the empty polar ends are cut (to 69 degrees at most) instead of leaving bands at the sides
 const flatOut = () => flatMap && zoom <= flatFit()*1.02;   // fully zoomed out: keep the equator level
 function setZoom(z){
   if(flatMap){
