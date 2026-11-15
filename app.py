@@ -47,10 +47,7 @@ except Exception:
     SPATIAL = False
 FIRST = "2000-11-01"
 LAST = db.execute("SELECT max(month) FROM monthly_country").fetchone()[0].isoformat()
-# The newest year can end in FIRMS near-real-time files, which have no type column (pipeline.ingest_api): months from here on are first numbers.
-_newest = sorted((ROOT / "hotspots").glob("*/*.parquet"), key=lambda p: p.stem)[-1:]
-_nrt = _newest and db.execute(f"SELECT min(acq_date) FROM read_parquet({[p.as_posix() for p in _newest[0].parent.parent.glob(f'*/{_newest[0].name}')]}) WHERE type IS NULL").fetchone()[0]
-PROVISIONAL = _nrt.isoformat()[:7] if _nrt else None
+PROVISIONAL = VAL.get("provisional")   # first month built from FIRMS near-real-time files (pipeline.build): first numbers from here on
 BOXES = {c: [round(v, 2) for v in box] for c, *box in db.execute(
     f"SELECT * FROM read_parquet('{(ROOT / 'serve').as_posix()}/countries.parquet')").fetchall()}
 COUNTRIES = list(BOXES)

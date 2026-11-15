@@ -535,6 +535,10 @@ def build(root, sensors=tuple(SENSORS)):
                            sum(raw_terra + raw_aqua) AS raw_modis, sum(raw_n20 + raw_snpp) AS raw_viirs, sum(harm) AS harm,
                            sum(harm_night) AS harm_night, sum(vharm) AS vharm, sum(vharm_night) AS vharm_night
                     FROM monthly GROUP BY ALL ORDER BY month""", serve / "globe.parquet")
+    # near-real-time files have no type column (ingest_api): the first such month and all later ones are first numbers
+    newest = max(p.stem for p in (root / "hotspots").glob("*/*.parquet"))
+    nrt = con.execute(f"SELECT min(acq_date) FROM read_parquet('{root.as_posix()}/hotspots/*/{newest}.parquet') WHERE type IS NULL").fetchone()[0]
+    out["provisional"] = f"{nrt:%Y-%m}" if nrt else None
     (serve / "validation.json").write_text(json.dumps(out, indent=1, default=str))
     con.close()
     pack_globe(serve)
