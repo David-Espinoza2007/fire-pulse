@@ -392,7 +392,7 @@ function drawTexture(g, moving){
   if(TEX.state !== 'ready'){ loadTexture(); return false; }
   // not finer than the texture's own pixels: zoomed in, a finer buffer only repeats each texture pixel as a block; a coarser one is scaled up smoothly below
   // the budget counts the pixels the Earth covers, not the empty sky around the globe: the same work gives a sharper moving globe
-  const budget = moving ? 120000 : 700000, cover = Math.min(W*H, alpha < .5 ? Math.PI*PC.k*PC.k : 2*Math.PI*PC.k*Math.PI*PC.k);
+  const budget = moving ? 220000 : 700000, cover = Math.min(W*H, alpha < .5 ? Math.PI*PC.k*PC.k : 2*Math.PI*PC.k*Math.PI*PC.k);
   const q = Math.min(dpr, Math.sqrt(budget/cover), Math.max(0.03, TEX.w/(2*Math.PI*PC.k)));
   const w = Math.max(1, Math.round(W*q)), h = Math.max(1, Math.round(H*q));
   if(texC.width !== w || texC.height !== h){ texC.width = w; texC.height = h; texBuf = null; }
