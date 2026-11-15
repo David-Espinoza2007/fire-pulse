@@ -1187,7 +1187,8 @@ const unitWord = () => state.harm ? UNIT[state.unit].word : 'detections as repor
 const unitSentence = () => state.harm ? UNIT[state.unit].sentence : 'Counts as the satellites reported them. Years cannot be compared.';
 // a month is estimated when the server says so; data from before the units change has no flag, then the era decides
 const isEst = t => state.harm && !(months[t].measured ?? !UNIT[state.unit].est(t));
-const srcWord = (x, t) => state.unit === 'viirs' ? (isEst(t) ? 'Estimated from the older satellites' : 'Measured by the newer satellites')
+const srcWord = (x, t) => state.unit === 'viirs' ? (isEst(t) ? 'Estimated from the older satellites'
+    : x.source === 'snpp_scaled' ? 'Measured by an earlier satellite of the newer kind, scaled to match today\'s' : 'Measured by the newer satellites')
   : x.source === 'aqua' ? 'Measured by the reference satellite' : x.source === 'terra_scaled' ? 'Estimated from an older satellite (less certain)' : 'Estimated from the newer satellites';
 
 /* ---------- answer ---------- */

@@ -30,54 +30,84 @@ The jump is the new sensor, not more fire.
 
 ## The method
 
-The unit is the **adjusted fire detection**: the number of detections Aqua MODIS would have
-reported. Aqua is the reference because it passes at the same local time as VIIRS.
+The app keeps the record in two units and says for every month whether it is measured or estimated.
+
+- **Fire detections (main view).** What the newer satellites (VIIRS) report. Measured from February
+  2012. Earlier months are estimates from the two MODIS satellites, Aqua and Terra. This is the main
+  view for two reasons: it keeps the small fires that VIIRS sees, and MODIS ends about 2027.
+- **Strict long record.** What Aqua MODIS would have reported. Measured from August 2002 to 2021.
+  Earlier months come from Terra, later months from VIIRS. Aqua is the reference because it passes
+  at the same local time as VIIRS.
+
+A third choice shows the counts as the satellites reported them. These cannot be compared across years.
 
 1. **Clean.** Keep vegetation fires only (`type = 0`), drop the low-confidence class of each sensor.
 2. **Grid.** One row per 0.05 degree cell, local solar date, day or night, and satellite.
-3. **Conversion tables.** In the years when both sensors flew, look up how many Aqua pixels were in
-   the same cell, date and day/night as each VIIRS row. Average this per class of fire radiative
-   power, pixel count, and day/night, per 5 degree tile, falling back to the 20 degree tile and
-   then to the globe.
-4. **Calibration.** A ratio of sums per region, calendar month and day/night adds the Aqua pixels
-   that had no VIIRS partner and removes the seasonal difference. Day and night are calibrated
+3. **VIIRS to Aqua units: conversion tables.** In the years when both sensors flew, look up how many
+   Aqua pixels were in the same cell, date and day/night as each VIIRS row. Average this per class
+   of fire radiative power, pixel count, and day/night, per 5 degree tile, falling back to the
+   20 degree tile and then to the globe.
+4. **Calibration, twice.** A ratio of sums per 20 degree tile, calendar month and day/night adds the
+   Aqua pixels that had no VIIRS partner and removes the seasonal difference. A second ratio per
+   5 degree tile corrects what is left where the tile has enough data. Day and night are calibrated
    separately; calibrating them together overstated night fires by about 30 %.
-5. **Series.** Terra scaled to Aqua before August 2002, real Aqua until 2021, converted NOAA-20
-   from 2022 (Aqua's orbit drifts in these years). Days when Aqua did not record are found from
-   the data and filled.
-6. **Also carried:** the night part of the count, and fire radiative power (less certain).
-7. **This week.** The public FIRMS file with the last 7 days of NOAA-20 detections is converted
-   with the same tables. Permanent heat sources are left out: cells the archive labels as
-   industrial, volcanic or offshore, and cells that burn in at least 10 months of a year on at
-   least 30 days with at least 40 % of detections at night (gas flares, smelters).
-8. **Proof.** Each overlap year is hidden in turn, the tables are learned from the other years, and
-   the converted VIIRS is compared with real Aqua.
+5. **MODIS to VIIRS units: ratio of sums.** The other direction cannot use the tables, because
+   30 % of VIIRS detections lie in cells where Aqua saw nothing that month. The estimate is the
+   MODIS count times the ratio VIIRS / MODIS per 5 degree tile, calendar month and day/night, with
+   the same fallbacks. Aqua and Terra are estimated separately and averaged with weights 0.7 and
+   0.3; one alone is used when the other did not record.
+6. **Series in VIIRS units.** Terra alone before August 2002, Aqua and Terra until January 2012,
+   Suomi NPP scaled to NOAA-20 until April 2018, then NOAA-20 as measured.
+7. **Series in Aqua units.** Terra scaled to Aqua before August 2002, real Aqua until 2021,
+   converted NOAA-20 from 2022 (Aqua's orbit drifts in these years). Days when Aqua did not record
+   are found from the data and filled.
+8. **Also carried:** the night part of the count, and fire radiative power (less certain).
+9. **This week.** The public FIRMS file with the last 7 days of NOAA-20 detections is shown as
+   measured, or converted with the same tables for the strict record. Permanent heat sources are
+   left out: cells the archive labels as industrial, volcanic or offshore, and cells that burn in
+   at least 10 months of a year on at least 30 days with at least 40 % of detections at night (gas
+   flares, smelters). Detections over the sea are left out too, because the long record holds
+   land only.
+10. **Proof.** Each overlap year is hidden in turn, the method is learned from the other years, and
+    the estimate is compared with the measured count of the hidden year.
 
-Results on hidden years, whole world, error per 5 degree tile and month:
+Results on hidden years, whole world, error per 5 degree tile and month.
+
+Strict long record (VIIRS converted to Aqua units, compared with real Aqua):
 
 | Method | NOAA-20, 2018-2021 | Suomi NPP, 2012-2021 |
 |---|---|---|
 | Raw VIIRS counts | 513 % | 513 % |
 | One global factor | 29 % | 28 % |
 | Monthly ratio per region | 17 % | 16 % |
-| Conversion tables (used) | 12 % | 12 % |
+| Conversion tables with both calibrations (used) | 11 % | 9 % |
 
-Two identical VIIRS instruments disagree by 6 % after conversion, so 12 % is close to the limit.
-Fire radiative power: 17 to 18 %.
+Main view (MODIS converted to VIIRS units, compared with measured VIIRS, 2012-2021):
+
+| Estimate from | Error |
+|---|---|
+| Aqua and Terra together (used) | 12 % |
+| Aqua alone | 13 % |
+| Terra alone (used before August 2002) | 16 % |
+
+The raw counts of the two identical VIIRS instruments differ by 7 % at this size, so no method can
+do much better. The totals are right within 1 % in both directions. Night counts are harder: the
+night estimate in VIIRS units is off by 29 % per tile and month. Fire radiative power: 17 to 18 %.
 
 The error depends on the size of the area, because errors of single places cancel out in a large
-area. Both VIIRS satellites pooled, hidden years, monthly count of one area:
+area. Hidden years, monthly count of one area:
 
 | Size of the area | 2,200 km | 1,100 km | 550 km | 220 km | 110 km | 55 km |
 |---|---|---|---|---|---|---|
-| Error of the adjusted count | 6 % | 8 % | 11 % | 15 % | 19 % | 25 % |
+| Strict record (both VIIRS satellites pooled) | 5 % | 7 % | 9 % | 14 % | 18 % | 25 % |
+| Main view (estimate from Aqua and Terra) | 7 % | 9 % | 12 % | 18 % | 24 % | 31 % |
 
 The map view "Confidence in the numbers" shows this error for every square of 1 degree (about
-100 km), on land. We chose 1 degree for three reasons. It is the smallest area a fire manager
-asks about. NOAA-20 and Suomi NPP, tested separately, give the same map at this size (correlation
-0.90). The map also repeats between odd and even test years (correlation 0.76, 97 % of squares
-within one colour class). Squares with fewer than 200 detections in the test are grey: too few
-fires to test. Months in which Aqua did not record on some days are left out of this test.
+100 km), on land, for the unit in use. We chose 1 degree because it is the smallest area a fire
+manager asks about, and because NOAA-20 and Suomi NPP, tested separately, give nearly the same map
+at this size. Squares with fewer than 200 detections in the test are grey:
+too few fires to test. Months in which a satellite did not record on some days are left out of
+this test.
 
 ## Build the data yourself
 
@@ -90,7 +120,7 @@ fires to test. Months in which Aqua did not record on some days are left out of 
 
 The pipeline downloads the yearly country archives from NASA FIRMS into `data/zips` (about 10 GB
 for all three sensors; each file holds all countries, so the Mexico build downloads them too). On a
-16 GB laptop the world build takes roughly 40 minutes and needs about 25 GB of free disk for
+16 GB laptop the world build takes roughly 75 minutes and needs about 25 GB of free disk for
 temporary files. When `data/world` exists the app uses it instead of `data/mx`. `FIRE_DATA=<folder>`
 picks a data folder explicitly.
 
@@ -123,12 +153,13 @@ were. This needs the hotspot archive (`<data>/hotspots`).
 
 ## Files
 
-- `harmonize.py` - the method, as DuckDB SQL: grid, conversion tables, calibration, ratios.
+- `harmonize.py` - the method, as DuckDB SQL: grid, conversion tables, calibration, ratios in both directions.
 - `pipeline.py` - download, clean, grid, fit, validate, write the tables the app reads, build the
   mask of permanent heat sources and the confidence map (`serve/trust.json`).
 - `reference.py` - downloads Natural Earth states and populated places for the map and place labels.
 - `app.py` - FastAPI. Main endpoints: `/api/calendar` (monthly record for a country, box or
-  polygon, with day/night filter), `/api/tiles/{level}/{tx}/{ty}` (map tiles with all months),
+  polygon, with day/night filter; `unit=viirs` or `unit=aqua` picks the record, and each month
+  says whether it is measured), `/api/tiles/{level}/{tx}/{ty}` (map tiles with all months),
   `/api/live*` (last 7 days: totals, "where to look first", and `/api/live/points.bin` with every
   detection of the week), `/api/points.bin` (every detection of one month in a box), `/api/states`, `/api/places`, `/api/validation`, `/api/trust` (test
   error per square of 1 degree, for the confidence map), `/api/hotspots.csv`,
@@ -145,8 +176,10 @@ were. This needs the hotspot archive (`<data>/hotspots`).
 - The monthly record ends in December 2025, the last month in the FIRMS yearly files. The months
   of 2026 need a FIRMS MAP_KEY and are not included. The last 7 days are shown separately.
 - Counts are not corrected for cloud cover. A cloudy month looks like a quiet month.
-- After 2021 the conversion cannot be checked against Aqua, because Aqua's orbit drifts.
-- Small fires that MODIS never saw before VIIRS cannot be recovered.
+- Main view: months before February 2012 are estimates from MODIS. The total is reliable, but the
+  estimate cannot say where the small fires were that MODIS never saw. Night counts of these years
+  are weak for small areas (29 % error per 5 degree tile and month).
+- Strict record: after 2021 the conversion cannot be checked against Aqua, because Aqua's orbit drifts.
 - Values before August 2002 come from Terra, which passes in the morning. They are less certain
   (about 30 % error), and Terra outages in 2001 and 2002 make some of those months too low.
 - The mask of permanent heat sources is conservative, so some gas flares that burn irregularly
