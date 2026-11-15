@@ -47,6 +47,10 @@ except Exception:
     SPATIAL = False
 FIRST = "2000-11-01"
 LAST = db.execute("SELECT max(month) FROM monthly_country").fetchone()[0].isoformat()
+# The newest year can end in FIRMS near-real-time files, which have no type column (pipeline.ingest_api): months from here on are first numbers.
+_newest = sorted((ROOT / "hotspots").glob("*/*.parquet"), key=lambda p: p.stem)[-1:]
+_nrt = _newest and db.execute(f"SELECT min(acq_date) FROM read_parquet({[p.as_posix() for p in _newest[0].parent.parent.glob(f'*/{_newest[0].name}')]}) WHERE type IS NULL").fetchone()[0]
+PROVISIONAL = _nrt.isoformat()[:7] if _nrt else None
 BOXES = {c: [round(v, 2) for v in box] for c, *box in db.execute(
     f"SELECT * FROM read_parquet('{(ROOT / 'serve').as_posix()}/countries.parquet')").fetchall()}
 COUNTRIES = list(BOXES)
@@ -676,7 +680,7 @@ def fine_cells(bbox: str, month: str, time: str = "all", normal: int = Query(0, 
 def meta():
     return {"countries": COUNTRIES, "boxes": BOXES, "first": FIRST[:7], "last": LAST[:7], "primary": PRIMARY,
             "aqua_start": H.AQUA_START[:7], "model_start": H.MODEL_START[:7], "data": ROOT.name, "live": LIVE_OK, "static_mask": STATIC_FILE.exists(),
-            "trust": TRUST_FILE.exists(), "points": (ROOT / "hotspots").exists(), "night": NIGHT, "states": HAS["states"], "places": HAS["places"], "units": UNITS,
+            "trust": TRUST_FILE.exists(), "provisional": PROVISIONAL, "points": (ROOT / "hotspots").exists(), "night": NIGHT, "states": HAS["states"], "places": HAS["places"], "units": UNITS,
             "baseline": {"aqua": list(H.BASELINE), **({"viirs": VV["baseline"]} if VV else {})},
             "viirs": {"start": VV["start"][:7], "ref_start": VV["ref_start"][:7], "reference": VV["reference"]} if VV else None}
 

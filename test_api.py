@@ -132,6 +132,7 @@ def test_calendar_time(client):
         assert c.get("/api/calendar", params={**base, "time": "night"}).json() == {"detail": "Rebuild the data to use this filter"}
         assert m["night"] is None and m["frp"] is None and m["night_median"] is None and m["frp_median"] is None
     assert c.get("/api/meta").json()["night"] is app.NIGHT
+    assert c.get("/api/meta").json()["provisional"] is None   # the test data has no near-real-time months
 
 
 def test_reference(client):

@@ -66,6 +66,7 @@ const PLAIN = {terra:'Older satellite', aqua:'Reference satellite', snpp:'Newer 
 const COUNTRIES = G.countries, NC = COUNTRIES.length, NONE = 65535;
 const monthName = t => `${MONTHS[monOf(t)]} ${yearOf(t)}`;
 const VV = meta.viirs || VAL.viirs || null, VSTART = VV ? tAt(VV.start) : T;
+const PROV = meta.provisional ? clamp(tAt(meta.provisional), 0, T) : T;   // months from here on come from near-real-time files: first numbers
 // The two units of the record: everything the page draws or says differently for each one is here.
 // state.unit picks one; state.harm = false shows the raw counts instead (as reported, no unit).
 const UNIT = {
@@ -1451,7 +1452,7 @@ function renderTime(){
   $('tRange').hidden = $('ruler').hidden = days; $('dRange').hidden = $('dRuler').hidden = !days; if(days) renderDays();
   $('sensorNow').textContent = state.live ? 'Newer satellite, first numbers' + (!state.harm ? ', as reported' : state.unit === 'viirs' ? '' : ', strict count')
     : dayOn() ? daySpan()
-    : state.harm ? UNIT[state.unit].now(t)
+    : state.harm ? UNIT[state.unit].now(t) + (t >= PROV ? ', first numbers' : '')
     : 'Counts as reported' + (months && months[t].raw.n20 + months[t].raw.snpp > 0 ? ', newer satellites included' : '');
   syncWhen(); legend(); dirty = true; renderRuler();
   if(!months) return;
@@ -1705,7 +1706,7 @@ function renderCheck(){
   $('chkA').textContent = v ? 'VIIRS, measured' : 'Aqua MODIS, measured';
   $('chkB').textContent = v ? 'Estimate from MODIS Aqua and Terra (not used to fit it)' : 'VIIRS, adjusted (not used to fit it)';
   $('limits').innerHTML = [v ? `Months before ${monthName(VSTART)} are estimates from the older satellites. They cannot be checked directly.` : 'Since 2022 the adjusted numbers cannot be checked against the reference satellite.',
-    'Clouds hide fires. A cloudy month looks like a quiet month.', 'The last 7 days are first numbers and can change.'].map(s => `<li>${s}</li>`).join('');
+    'Clouds hide fires. A cloudy month looks like a quiet month.', PROV < T ? `The months from ${monthName(PROV)} and the last 7 days are first numbers and can change.` : 'The last 7 days are first numbers and can change.'].map(s => `<li>${s}</li>`).join('');
   const tests = v ? ` In hidden-year tests, per 5° tile and month, the estimate was off by ${pct(V.both.error)} from Aqua and Terra together and ${pct(V.terra.error)} from Terra alone.`
     + (V.twin ? ` Two identical satellites differ by about ${pct(V.twin.raw)}: no method can do better.` : '') : '';
   $('checkSpan').textContent = `${yearOf(t0)} to ${yearOf(t1)}`;
