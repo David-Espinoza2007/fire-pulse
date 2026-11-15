@@ -396,8 +396,11 @@ def build(root, sensors=tuple(SENSORS)):
         for i, held in enumerate([*range(int(vstart_s[:4]), OVERLAP_END + 1), None]):
             print("fit up", sat, "final" if held is None else f"without {held}", flush=True)
             H.fit_up(con, "u", f"cp_{sat}", "cp_V", f"{vwin} AND NOT {own}" + ("" if held is None else f" AND year(local_date) <> {held}"))
-            where = f"local_date < {vstart}" if held is None else f"{vwin} AND year(local_date) = {held}"
-            con.execute((f"INSERT INTO pred_up_{sat} " if i else f"CREATE TABLE pred_up_{sat} AS ") + H.apply_up("u", f"cp_{sat}", where))
+            # the years before VIIRS go in one at a time: for the open range the planner expects no rows and builds its hash tables on all of them
+            wheres = ([f"local_date < {vstart} AND year(local_date) = {y}" for y in range(2000, int(vstart_s[:4]) + 1)] if held is None
+                      else [f"{vwin} AND year(local_date) = {held}"])
+            for j, where in enumerate(wheres):
+                con.execute((f"INSERT INTO pred_up_{sat} " if i or j else f"CREATE TABLE pred_up_{sat} AS ") + H.apply_up("u", f"cp_{sat}", where))
     vval = f"{vwin} AND NOT {gap} AND NOT {tgap}"
     con.execute(f"""CREATE TEMP TABLE val_v AS
       SELECT t5x, t5y, month, daynight, CAST(sum(a) AS DOUBLE) AS actual, sum(ua) AS ua, sum(ut) AS ut, {w} * sum(ua) + {1 - w:.6g} * sum(ut) AS ub
