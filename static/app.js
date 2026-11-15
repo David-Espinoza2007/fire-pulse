@@ -390,7 +390,8 @@ function loadTexture(){
 const LIGHT = (() => { const v = [-0.5, 0.55, 0.67], n = Math.hypot(...v); return v.map(x => x/n); })();
 function drawTexture(g, moving){
   if(TEX.state !== 'ready'){ loadTexture(); return false; }
-  const budget = moving ? 120000 : 700000, q = Math.min(dpr, Math.sqrt(budget/(W*H)));
+  // not finer than the texture's own pixels: zoomed in, a finer buffer only repeats each texture pixel as a block; a coarser one is scaled up smoothly below
+  const budget = moving ? 120000 : 700000, q = Math.min(dpr, Math.sqrt(budget/(W*H)), Math.max(0.03, TEX.w/(2*Math.PI*PC.k)));
   const w = Math.max(1, Math.round(W*q)), h = Math.max(1, Math.round(H*q));
   if(texC.width !== w || texC.height !== h){ texC.width = w; texC.height = h; texBuf = null; }
   if(!texBuf) texBuf = texG.createImageData(w, h);
@@ -551,6 +552,12 @@ function sqPush(x, y, s, b, v, l, u){
   }
   const i = SQ.n++; SQ.x[i] = x; SQ.y[i] = y; SQ.s[i] = s; SQ.b[i] = b; SQ.v[i] = v; SQ.l[i] = l; SQ.u[i] = u;
 }
+// Fire squares. On the dark looks they add light. On the Realistic land added light washes out to pale patches,
+// so there the colour is painted over the land, from orange up (the dark end of the ramp does not show on it).
+const onLand = () => !!LOOK[globeLook].texture;
+const fireOp = () => onLand() ? 'source-over' : 'lighter';
+const fireCol = q => lut(seqLUT, onLand() ? 0.45 + 0.55*q : 0.2 + 0.7*q);
+const fireA = q => Math.min(1, (onLand() ? 0.2 + 0.75*q : 0.3 + 0.45*q)*fireGain);
 function sqFlush(g, from, to, count, a, glow){   // counting sort by bucket, then one path per bucket
   if(to <= from || a <= 0) return;
   sqCount.fill(0);
@@ -558,16 +565,16 @@ function sqFlush(g, from, to, count, a, glow){   // counting sort by bucket, the
   for(let b=0;b<NB;b++) sqCount[b + 1] += sqCount[b];
   const pos = sqCount.slice(0, NB);
   for(let i=from;i<to;i++) sqOrder[pos[SQ.b[i]]++] = i;
-  g.globalCompositeOperation = count ? 'lighter' : 'source-over';
+  g.globalCompositeOperation = count ? fireOp() : 'source-over';
   for(let b=0;b<NB;b++){
     const j0 = sqCount[b], j1 = sqCount[b + 1]; if(j0 === j1) continue;
-    const q = (b + .5)/NB; g.fillStyle = count ? lut(seqLUT, 0.2 + 0.7*q) : lut(divLUT, q);
+    const q = (b + .5)/NB; g.fillStyle = count ? fireCol(q) : lut(divLUT, q);
     if(glow){   // one soft glow, only on the round globe while it is still
       g.globalAlpha = Math.min(1, (0.3 + 0.7*q)*0.1*fireGain)*a; g.beginPath();
       for(let j=j0;j<j1;j++){ const i = sqOrder[j], r = SQ.s[i]*1.8; g.moveTo(SQ.x[i] + r, SQ.y[i]); g.arc(SQ.x[i], SQ.y[i], r, 0, 7); }
       g.fill();
     }
-    g.globalAlpha = (count ? Math.min(1, (0.3 + 0.45*q)*fireGain) : 0.8)*a; g.beginPath();
+    g.globalAlpha = (count ? fireA(q) : 0.8)*a; g.beginPath();
     for(let j=j0;j<j1;j++){ const i = sqOrder[j], s = SQ.s[i], h = s/2; g.rect(SQ.x[i] - h, SQ.y[i] - h, s, s); }
     g.fill();
   }
@@ -590,16 +597,16 @@ function cells0(vb, box){
 }
 function drawLive0(g, cells, skip, a, moving){   // the last 7 days on 0.5 degree cells
   const k = PC.k, zs = 0.75 + 0.3*(k/S0), foot = 0.55*k*RES*RAD;
-  g.globalCompositeOperation = 'lighter';
+  g.globalCompositeOperation = fireOp();
   for(const c of cells){
     const v = c[state.harm ? 3 : 2]; if(v < Math.max(0.5, minDens)) continue;
     const lon = c[0] + RES/2, lat = c[1] + RES/2;
     if(skip && inBox(skip, lon, lat)) continue;
     if(!projLL(lon, lat, 16)) continue;
     const q = Math.sqrt(Math.min(1, v*4/VMAX)), r = clamp(Math.max(foot, (0.7 + 2.5*q)*zs), 0.8, 14);
-    g.fillStyle = lut(seqLUT, 0.2 + 0.7*q);
+    g.fillStyle = fireCol(q);
     if(!moving){ g.globalAlpha = Math.min(1, (0.3 + 0.7*q)*0.1*fireGain)*a; g.beginPath(); g.arc(PX[0], PX[1], r*2.2, 0, 7); g.fill(); }
-    g.globalAlpha = Math.min(1, (0.3 + 0.45*q)*fireGain)*a; g.beginPath(); g.arc(PX[0], PX[1], r, 0, 7); g.fill();
+    g.globalAlpha = fireA(q)*a; g.beginPath(); g.arc(PX[0], PX[1], r, 0, 7); g.fill();
   }
 }
 
@@ -680,10 +687,10 @@ function drawL1(g, d, a){
   }
   const side = Math.max(1.5, k*d.res*RAD), h = side/2, count = !d.anom;
   for(let i=0;i<d.n;i++){ if(!projU(d.ux[i], d.uy[i], d.uz[i], side)) continue; qX[nQ] = PX[0]; qY[nQ] = PX[1]; qI[nQ++] = i; }
-  g.globalCompositeOperation = count ? 'lighter' : 'source-over';
+  g.globalCompositeOperation = count ? fireOp() : 'source-over';
   for(let b=0;b<NB;b++){
-    const q = (b + .5)/NB; g.fillStyle = count ? lut(seqLUT, 0.2 + 0.7*q) : lut(divLUT, q);
-    g.globalAlpha = (count ? Math.min(1, (0.3 + 0.45*q)*fireGain) : 0.8)*a; g.beginPath();
+    const q = (b + .5)/NB; g.fillStyle = count ? fireCol(q) : lut(divLUT, q);
+    g.globalAlpha = (count ? fireA(q) : 0.8)*a; g.beginPath();
     for(let j=0;j<nQ;j++){ if(d.b[qI[j]] !== b) continue; g.rect(qX[j] - h, qY[j] - h, side, side); }
     g.fill();
   }
