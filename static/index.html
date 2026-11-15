@@ -5,125 +5,212 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fire Pulse: where is it burning, and is it normal</title>
 <meta name="description" content="25 years of satellite fire detections in one comparable record, and the last 7 days, for any country, state or drawn area.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%A5%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23101214'/%3E%3Ccircle cx='16' cy='16' r='11' fill='none' stroke='%23e6e7e8' stroke-width='1.8'/%3E%3Cellipse cx='16' cy='16' rx='5' ry='11' fill='none' stroke='%23e6e7e8' stroke-width='1.3'/%3E%3Cpath d='M5 16h22' stroke='%23e6e7e8' stroke-width='1.3'/%3E%3Ccircle cx='21' cy='11' r='3.2' fill='%23e8833a'/%3E%3C/svg%3E">
+<!-- Source Serif 4 and Source Sans 3: SIL Open Font License 1.1 (see ASSETS.md) -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div class="app">
-  <aside class="side ask" id="ask" aria-label="Your question">
-    <div class="brand">
-      <span class="brand-name">Fire Pulse</span>
-      <span class="tag">Where it burns, and whether that is normal</span>
+<div class="app mode-pres" id="app">
+  <header class="bar" id="ask" aria-label="Fire Pulse">
+    <div class="brand"><svg class="mark" viewBox="0 0 32 32" width="24" height="24" aria-hidden="true"><circle cx="16" cy="16" r="12" fill="none" stroke="currentColor" stroke-width="1.6"/><ellipse cx="16" cy="16" rx="5.5" ry="12" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4 16h24" stroke="currentColor" stroke-width="1.2"/><circle cx="21.5" cy="10.5" r="3.2" fill="var(--fire-mid)"/></svg><span class="brand-name">Fire Pulse</span><span class="tag">Where it burns, and whether that is normal</span></div>
+    <button type="button" class="btn tools-open" id="sideOpen" aria-controls="sidebar">Tools</button>
+    <form id="searchForm" class="search" autocomplete="off" role="search">
+      <label class="sr" for="q">Search a country or a state</label>
+      <input id="q" placeholder="Search a country or state" aria-autocomplete="list" aria-controls="qResults" aria-expanded="false" role="combobox">
+      <datalist id="places"></datalist>
+      <div class="q-results" id="qResults" role="listbox" hidden></div>
+    </form>
+    <div class="quick" id="quick" aria-label="Quick places"></div>
+    <button type="button" class="btn primary" id="polyDone" hidden>Finish shape</button>
+    <div class="mode-toggle">
+      <span id="modeLabel">Research tools</span>
+      <button type="button" class="switch" id="modeBtn" role="switch" aria-checked="false" aria-labelledby="modeLabel"><i></i></button>
     </div>
-    <h2 class="side-title">Your question</h2>
+  </header>
 
-    <section class="step" aria-labelledby="s1">
-      <h3 id="s1"><span class="num">1</span>Where?</h3>
-      <form id="searchForm" class="search" autocomplete="off">
-        <label class="sr" for="q">Find a country</label>
-        <input id="q" list="places" placeholder="Country, e.g. Mexico">
-        <datalist id="places"></datalist>
-        <button type="submit" class="btn">Go</button>
-      </form>
-      <label class="field" id="stateWrap" hidden>State or province
-        <select id="stateSel"><option value="">Whole country</option></select>
-      </label>
-      <div class="chips" id="chips"></div>
-      <div class="actions">
-        <button type="button" class="btn" id="boxDraw" aria-pressed="false">Draw a box</button>
-        <button type="button" class="btn" id="polyDraw" aria-pressed="false">Draw a shape</button>
-        <button type="button" class="btn" id="polyDone" hidden>Finish shape</button>
-        <button type="button" class="btn" id="wholeBtn">Whole planet</button>
-      </div>
-      <details class="area" id="area">
-        <summary>Type coordinates</summary>
-        <div class="area-grid">
-          <label>North<input id="bN" type="number" step="0.05" min="-90" max="90" placeholder="31.8"></label>
-          <label>South<input id="bS" type="number" step="0.05" min="-90" max="90" placeholder="25.5"></label>
-          <label>West<input id="bW" type="number" step="0.05" min="-180" max="180" placeholder="-109.1"></label>
-          <label>East<input id="bE" type="number" step="0.05" min="-180" max="180" placeholder="-103.3"></label>
+  <aside class="sidebar" id="sidebar" aria-label="Research tools">
+    <div class="sb-head">
+      <h2 class="sb-title">Research tools</h2>
+      <button type="button" class="panel-toggle" id="sideBtn" aria-expanded="true" aria-controls="sbBody" title="Fold the research tools"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M8 2L4 6l4 4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg><span class="sr">Fold the research tools</span></button>
+    </div>
+    <nav class="sb-rail" aria-label="Sections">
+      <button type="button" data-sec="secGeo" title="Geography">A</button><button type="button" data-sec="secTime" title="Time">B</button><button type="button" data-sec="secPlay" title="Playback">C</button><button type="button" data-sec="secSat" title="Satellites and harmonization">D</button><button type="button" data-sec="secDisp" title="Display">E</button>
+    </nav>
+    <div class="sb-body" id="sbBody">
+      <details class="sb-sec" id="secGeo" open>
+        <summary><span class="lt">A</span>Geography</summary>
+        <div class="sb-in">
+          <div class="crumb" id="crumb" aria-label="Selected area"></div>
+          <label class="field" id="stateWrap" hidden>State or province<select id="stateSel"><option value="">Whole country</option></select></label>
+          <p class="pop-k">Quick places</p>
+          <div class="chips" id="chips"></div>
+          <p class="pop-k">Draw on the map</p>
+          <div class="actions">
+            <button type="button" class="btn" id="boxDraw" aria-pressed="false">Draw a box</button>
+            <button type="button" class="btn" id="polyDraw" aria-pressed="false">Draw a shape</button>
+            <button type="button" class="btn" id="wholeBtn">Reset to whole planet</button>
+          </div>
+          <details class="area" id="area">
+            <summary>Type coordinates</summary>
+            <div class="area-grid">
+              <label>North<input id="bN" type="number" step="0.05" min="-90" max="90" placeholder="31.8"></label>
+              <label>South<input id="bS" type="number" step="0.05" min="-90" max="90" placeholder="25.5"></label>
+              <label>West<input id="bW" type="number" step="0.05" min="-180" max="180" placeholder="-109.1"></label>
+              <label>East<input id="bE" type="number" step="0.05" min="-180" max="180" placeholder="-103.3"></label>
+            </div>
+            <button type="button" class="btn" id="boxApply">Use these bounds</button>
+            <p class="hint">Degrees. South and west are negative. Areas are cut on a grid of about 5 km.</p>
+          </details>
+          <p class="hint"><span class="ptag">proposed</span> Continents: the boundary data has no continent field yet, so this level is not offered.</p>
         </div>
-        <button type="button" class="btn" id="boxApply">Use these bounds</button>
-        <p class="hint">Degrees. South and west are negative. Areas are cut on a grid of about 5 km.</p>
       </details>
-    </section>
 
-    <section class="step" aria-labelledby="s2">
-      <h3 id="s2"><span class="num">2</span>When?</h3>
-      <div class="seg wrap" role="group" aria-labelledby="s2">
-        <button type="button" id="wLive" aria-pressed="false" hidden>Last 7 days</button>
-        <button type="button" id="wLatest" aria-pressed="true">Latest month</button>
-        <button type="button" id="wPick" aria-pressed="false">Pick a month</button>
-      </div>
-      <div class="pick" id="pickWrap" hidden>
-        <label class="field">Month<select id="pMonth"></select></label>
-        <label class="field">Year<select id="pYear"></select></label>
-      </div>
-    </section>
+      <details class="sb-sec" id="secTime" open>
+        <summary><span class="lt">B</span>Time</summary>
+        <div class="sb-in">
+          <p class="pop-k">Range for playback, calendar and downloads</p>
+          <div class="seg small" id="presets" role="group" aria-label="Range presets">
+            <button type="button" data-preset="all" aria-pressed="true">All years</button><button type="button" data-preset="10" aria-pressed="false">Last 10 years</button><button type="button" data-preset="5" aria-pressed="false">Last 5 years</button><button type="button" data-preset="custom" aria-pressed="false">Custom</button>
+          </div>
+          <div class="range-grid">
+            <span class="oc-k">From</span><select id="pfM" aria-label="From month"></select><select id="pfY" aria-label="From year"></select>
+            <span class="oc-k">To</span><select id="ptM" aria-label="To month"></select><select id="ptY" aria-label="To year"></select>
+          </div>
+          <div hidden><select id="yFrom"></select><select id="yTo"></select></div>
+          <p class="pop-k">Go to a month</p>
+          <div class="seg" role="group" aria-label="When"><button type="button" id="wPick" aria-pressed="false">Pick a month</button></div>
+          <div class="pick" id="pickWrap" hidden>
+            <label class="field">Month<select id="pMonth"></select></label>
+            <label class="field">Year<select id="pYear"></select></label>
+          </div>
+          <p class="hint">The archive is monthly, November 2000 to December 2025. <span class="ptag">proposed</span> day-level dates need a new server endpoint.</p>
+        </div>
+      </details>
 
-    <details class="step more" id="moreOpts" hidden><summary>More options</summary></details>
+      <details class="sb-sec" id="secPlay">
+        <summary><span class="lt">C</span>Playback</summary>
+        <div class="sb-in">
+          <label class="opt"><input type="checkbox" id="pLoop"> Loop the range</label>
+          <p class="hint">Each frame is one real month of detections; nothing is interpolated between frames. Speed is on the time bar.</p>
+          <p class="hint"><span class="ptag">proposed</span> Step by year (sum of 12 months on the globe).</p>
+        </div>
+      </details>
 
-    <fieldset class="step" id="stepShow">
-      <legend><span class="num">3</span>Show on the map</legend>
-      <label class="opt"><input type="radio" name="view" value="count" checked> Amount of fire</label>
-      <label class="opt"><input type="radio" name="view" value="anom"> Compared with normal</label>
-      <label class="opt"><input type="radio" name="view" value="trust"> Confidence in the numbers</label>
-    </fieldset>
+      <details class="sb-sec" id="secSat" open>
+        <summary><span class="lt">D</span>Satellites and harmonization</summary>
+        <div class="sb-in">
+          <fieldset class="step inner">
+            <legend class="pop-k">Counts</legend>
+            <label class="opt"><input type="radio" name="counts" value="harm" checked> Harmonized, in VIIRS units (recommended)
+              <span class="opt-help">Before Feb 2012: MODIS converted, an estimate with a range. From Feb 2012: VIIRS as measured.</span></label>
+            <label class="opt"><input type="radio" name="counts" value="raw"> As each satellite reported
+              <span class="opt-help">Sum of Terra, Aqua, Suomi NPP and NOAA-20; not comparable across 2012.</span></label>
+          </fieldset>
+          <fieldset class="step" id="stepOnly">
+            <legend class="pop-k">Time of day</legend>
+            <label class="opt"><input type="radio" name="time" value="all" checked> All fires</label>
+            <label class="opt"><input type="radio" name="time" value="day" id="tDay"> Day fires
+              <span class="opt-help">Seen at about 1:30 p.m., when most fires are lit and spread.</span></label>
+            <label class="opt"><input type="radio" name="time" value="night" id="tNight"> Night fires
+              <span class="opt-help">Fires still burning at about 1:30 a.m. are usually not under control.</span></label>
+            <p class="hint" id="timeNote" hidden>Day and night for months: available after the data is rebuilt. It works for the last 7 days.</p>
+            <label class="opt check" id="strongWrap"><input type="checkbox" id="strong"> Strong fires only
+              <span class="opt-help">Last 7 days only: detections above the week's 90th percentile of fire radiative power.</span></label>
+          </fieldset>
+          <p class="hint">Confidence filter is fixed in the build: MODIS 30 % or more, VIIRS not "low". The two scales are not treated as equivalent.</p>
+          <p class="hint"><span class="ptag">proposed</span> MODIS-only or VIIRS-only layer on the globe (needs the server to split the grid by sensor).</p>
+          <button type="button" class="link" id="aboutBtn">How the harmonization works</button>
+          <p class="hint" id="foot">A fire detection is a place where a satellite saw the heat of a fire. A large fire gives many detections.</p>
+        </div>
+      </details>
 
-    <fieldset class="step" id="stepOnly">
-      <legend><span class="num">4</span>Only count</legend>
-      <label class="opt"><input type="radio" name="time" value="all" checked> All fires</label>
-      <label class="opt"><input type="radio" name="time" value="day" id="tDay"> Day fires
-        <span class="opt-help">Seen at about 1:30 p.m., when most fires are lit and spread.</span></label>
-      <label class="opt"><input type="radio" name="time" value="night" id="tNight"> Night fires
-        <span class="opt-help">Fires still burning at about 1:30 a.m. are usually not under control.</span></label>
-      <p class="hint" id="timeNote" hidden>Day and night for months: available after the data is rebuilt. It works for the last 7 days.</p>
-      <label class="opt check" id="strongWrap"><input type="checkbox" id="strong"> Strong fires only
-        <span class="opt-help">Last 7 days only: hides weak heat, such as small field burns.</span></label>
-    </fieldset>
-
-    <details class="step adv">
-      <summary>Advanced</summary>
-      <fieldset class="inner">
-        <legend>Counts</legend>
-        <label class="opt"><input type="radio" name="counts" value="harm" checked> Comparable across years (recommended)</label>
-        <label class="opt"><input type="radio" name="counts" value="raw"> As the satellites reported</label>
-      </fieldset>
-      <div class="pick">
-        <label class="field">Downloads from<select id="yFrom"></select></label>
-        <label class="field">to<select id="yTo"></select></label>
-      </div>
-      <button type="button" class="btn" id="aboutBtn">How it works</button>
-    </details>
-
-    <p class="foot" id="foot">A fire detection is a place where a satellite saw the heat of a fire. A large fire gives many detections.</p>
+      <details class="sb-sec" id="secDisp">
+        <summary><span class="lt">E</span>Display</summary>
+        <div class="sb-in">
+          <p class="pop-k">Globe</p>
+          <div class="vrow">
+            <button type="button" class="vbox" data-look="standard" aria-pressed="true"><svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="11" fill="#0a1428" stroke="#5a7bb5" stroke-width="1.5"/><path d="M8 10c3-2 5 1 7 0s3-3 5-1M7 16c3 1 4-1 7 1s4 1 6-1" stroke="#33436a" stroke-width="2" fill="none"/><circle cx="17" cy="15" r="1.8" fill="var(--fire-mid)"/></svg>Standard</button>
+            <button type="button" class="vbox" data-look="realistic" aria-pressed="false"><svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="11" fill="#1f4a6e" stroke="#8fb4d8" stroke-width="1.2"/><path d="M7 11c3-3 6 0 8-1s3-3 6-1c0 3-3 4-5 4s-4 3-7 2M9 18c2-1 4 0 5 2" fill="#6f8a4c" stroke="none"/><circle cx="17" cy="15" r="1.8" fill="var(--fire-mid)"/></svg>Realistic</button>
+            <button type="button" class="vbox" data-look="minimal" aria-pressed="false"><svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="11" fill="#16191c" stroke="#3b4049" stroke-width="1"/><path d="M8 10c3-2 5 1 7 0s3-3 5-1M7 16c3 1 4-1 7 1s4 1 6-1" stroke="#3b4049" stroke-width="2" fill="none"/><circle cx="17" cy="15" r="1.8" fill="var(--fire-mid)"/></svg>Minimal</button>
+          </div>
+          <div class="opt"><button type="button" class="switch flat-toggle" role="switch" aria-checked="false" aria-labelledby="flatLbl2"><i></i></button><span id="flatLbl2">Flat map instead of a globe</span></div>
+          <fieldset class="step" id="stepShow">
+            <legend class="pop-k">Colour the fires by</legend>
+            <div class="vrow">
+              <button type="button" class="vbox" data-view="count" aria-pressed="true"><span class="vsw" style="background:linear-gradient(90deg,var(--fire-lo),var(--fire-mid),var(--fire-hi))"></span>Amount</button>
+              <button type="button" class="vbox" data-view="anom" aria-pressed="false"><span class="vsw" style="background:linear-gradient(90deg,var(--cool),var(--neutral),var(--warm))"></span>Vs normal</button>
+              <button type="button" class="vbox" data-view="trust" aria-pressed="false"><span class="vsw" style="background:linear-gradient(90deg,#fde725,#5ec962,#21918c,#3b528b)"></span>Confidence</button>
+            </div>
+            <div hidden><input type="radio" name="view" value="count" checked><input type="radio" name="view" value="anom"><input type="radio" name="view" value="trust"></div>
+          </fieldset>
+          <label class="oc-col"><span class="oc-line"><span class="oc-k">Show squares with at least</span><span id="densV">all squares</span></span>
+            <input type="range" id="dens" min="0" max="5" step="1" value="0" aria-describedby="densH"></label>
+          <p class="oc-hint" id="densH">Detections per square of about 50 km. Hides sparse squares; the numbers in the analysis do not change.</p>
+          <label class="oc-col"><span class="oc-line"><span class="oc-k">Fire brightness</span><span id="gainV">100 %</span></span>
+            <input type="range" id="gain" min="50" max="200" step="10" value="100"></label>
+          <label class="opt"><input type="checkbox" id="optStates" checked> State and province borders (when zoomed in)</label>
+          <label class="opt"><input type="checkbox" id="optPlaces" checked> Place names (when zoomed in)</label>
+          <button type="button" class="btn" id="resetDisp">Reset display</button>
+        </div>
+      </details>
+    </div>
   </aside>
 
   <main class="mid">
     <section class="globe" id="globe" aria-label="Map of fire detections">
       <canvas id="cv"></canvas>
       <p class="map-title" id="mapTitle"></p>
+      <div class="look-seg" role="group" aria-label="Globe look">
+        <button type="button" data-look="standard" aria-pressed="true">Standard</button><button type="button" data-look="realistic" aria-pressed="false">Realistic</button><button type="button" data-look="minimal" aria-pressed="false">Minimal</button>
+      </div>
+      <div class="flat-sw"><button type="button" class="switch flat-toggle" role="switch" aria-checked="false" aria-labelledby="flatLbl"><i></i></button><span id="flatLbl">Flat map</span></div>
+      <div class="mcard" id="mcard" aria-live="polite">
+        <p class="mc-k" id="mcPlace"></p>
+        <p class="mc-big" id="mcBig"></p>
+        <p class="mc-unit" id="mcUnit"></p>
+        <div class="mc-gauge" id="mcGauge" hidden><div class="gauge-bar"><i id="mcMark"></i></div><div class="gauge-k"><span>¼ of normal</span><span>normal</span><span>4×</span></div></div>
+        <p class="mc-line" id="mcLine"></p>
+      </div>
       <div class="legend" id="legend"></div>
+      <button type="button" class="btn gizmo-toggle" id="gizmoBtn" aria-pressed="false" title="Hide the controls on the map and the time bar (H)">Hide controls</button>
       <p class="howto" id="howto">Drag to spin. Scroll to zoom. Click a country to fly in.</p>
-      <p id="loading" class="center-msg">Loading 25 years of fire detections…</p>
+      <div id="loading" class="center-msg" role="status"><div class="load"><p id="loadText">Loading 25 years of fire detections</p><div class="load-bar"><i id="loadBar"></i></div></div></div>
       <p id="loadErr" class="center-msg" hidden>The data did not load. Start the server (see the README) and reload.</p>
     </section>
     <footer class="dock">
-      <button type="button" id="play" class="btn">▶ Play</button>
-      <div class="time">
-        <div class="time-top">
-          <label for="tRange" class="readout" id="readout"></label>
-          <span class="muted" id="sensorNow"></span>
+      <div class="ctl">
+        <button type="button" class="ibtn" id="tPrev" title="Previous month" aria-label="Previous month"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M8 2L4 6l4 4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button>
+        <button type="button" id="play" class="btn primary play">Play</button>
+        <button type="button" class="ibtn" id="tNext" title="Next month" aria-label="Next month"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button>
+      </div>
+      <div class="when">
+        <label for="tRange" class="readout" id="readout"></label>
+        <span class="muted" id="sensorNow"></span>
+      </div>
+      <div class="ruler-wrap">
+        <div class="ruler" id="ruler" aria-hidden="true"></div>
+        <input type="range" id="tRange" class="scrub" min="0" max="299" step="1" value="299" aria-label="Month">
+        <div class="eras" id="eras" hidden></div>
+      </div>
+      <div class="dock-r">
+        <div class="seg small" role="group" aria-label="Playback speed" id="speedSeg">
+          <button type="button" data-speed="0.5" aria-pressed="false">½×</button><button type="button" data-speed="1" aria-pressed="true">1×</button><button type="button" data-speed="2" aria-pressed="false">2×</button><button type="button" data-speed="4" aria-pressed="false">4×</button>
         </div>
-        <input type="range" id="tRange" min="0" max="299" step="1" value="299">
-        <div class="eras" id="eras"></div>
+        <div class="seg small" role="group" aria-label="Period">
+          <button type="button" id="wLatest" aria-pressed="true">Latest month</button><button type="button" id="wLive" aria-pressed="false" hidden>Last 7 days</button>
+        </div>
       </div>
     </footer>
   </main>
 
-  <aside class="side panel" id="panel" aria-label="The answer">
-    <h2 class="side-title">The answer</h2>
+  <aside class="side panel" id="panel" aria-label="Analysis">
+    <div class="panel-head">
+      <h2 class="panel-title">Analysis</h2>
+      <button type="button" class="panel-toggle" id="panelBtn" aria-expanded="true" aria-controls="panelBody" title="Hide the analysis panel">
+        <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg><span class="sr">Hide the analysis panel</span></button>
+    </div>
+    <div class="panel-body" id="panelBody">
     <div aria-live="polite">
       <p class="eyebrow" id="pKind">Whole planet</p>
       <h2 class="place" id="pName">Earth</h2>
@@ -131,12 +218,21 @@
     </div>
 
     <section class="status" id="status" aria-live="polite">
-      <p class="st-level"><span class="v-icon" id="stIcon" aria-hidden="true"></span><span id="stLevel"></span></p>
       <p class="st-line" id="stLine"></p>
+      <div class="gauge" id="gauge" hidden>
+        <div class="gauge-bar"><i id="gaugeMark"></i></div>
+        <div class="gauge-k"><span>¼ of normal</span><span>normal</span><span>4×</span></div>
+      </div>
+      <p class="st-level"><span class="v-icon" id="stIcon" aria-hidden="true"></span><span id="stLevel"></span></p>
       <p class="st-src" id="stSrc"></p>
     </section>
 
     <div class="tiles" id="tiles"></div>
+
+    <section class="sec" id="techSec">
+      <div class="sec-head"><h3>Record for this period</h3><span id="techSpan"></span></div>
+      <table class="tech" id="techTable"></table>
+    </section>
 
     <section class="sec" id="lookSec" hidden>
       <h3>Where to look first</h3>
@@ -150,7 +246,7 @@
       <div class="sec-head"><h3>Season so far</h3><span id="seasonSpan"></span></div>
       <div class="season" id="season"></div>
       <div class="key">
-        <span><span class="sw"></span><span id="keyYear">This season</span></span>
+        <span><span class="sw barsw"></span><span id="keyYear">This season</span></span>
         <span><span class="sw med"></span>Normal season</span>
         <span><span class="sw band"></span>8 of 10 seasons</span>
       </div>
@@ -196,6 +292,17 @@
       <button type="button" class="link" id="trustAbout">How it works</button>
     </details>
 
+    <details class="sec" id="methodSec">
+      <summary>Method and validation</summary>
+      <table class="tech" id="methodTable"></table>
+      <p class="hint" id="methodNote"></p>
+    </details>
+
+    <details class="sec" id="accessSec">
+      <summary>Data access and citation</summary>
+      <div class="access" id="accessBody"></div>
+    </details>
+
     <section class="actions out">
       <button type="button" class="btn" id="dlBrief">Make a briefing</button>
       <button type="button" class="btn" id="copyLink">Copy link</button>
@@ -203,6 +310,7 @@
       <button type="button" class="btn" id="dlHot">Download detections (CSV)</button>
       <p class="toast" id="toast" role="status"></p>
     </section>
+    </div>
   </aside>
 </div>
 
@@ -215,5 +323,6 @@
 <script src="vendor/d3.min.js"></script>
 <script src="vendor/topojson-client.min.js"></script>
 <script src="app.js"></script>
+<script src="toolbar.js"></script>
 </body>
 </html>

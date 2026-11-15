@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fire Pulse design review</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%23111316'/%3E%3Cpath d='M4 20h6l3-9 4 14 3-8h8' fill='none' stroke='%23e8833a' stroke-width='2.4' stroke-linejoin='round'/%3E%3C/svg%3E">
+<!-- All five families are SIL Open Font License 1.1 (commercial use allowed). Loaded here only to preview them. -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Public+Sans:wght@400;500;600;700&family=Source+Sans+3:wght@400;600&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap">
+<style>
+/* Page chrome: neutral, so it does not take sides between the three directions. */
+:root{--bg:#f4f4f2;--fg:#17191c;--muted:#61666e;--line:#d9dad6;--card:#fff;--pick:#17191c}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121315;--fg:#e9e9e7;--muted:#9a9ea5;--line:#2b2d31;--card:#1a1b1e;--pick:#e9e9e7}}
+:root[data-theme="dark"]{--bg:#121315;--fg:#e9e9e7;--muted:#9a9ea5;--line:#2b2d31;--card:#1a1b1e;--pick:#e9e9e7}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 16px 80px}
+h1{font-size:28px;margin:0 0 6px;letter-spacing:-.01em}
+h2{font-size:20px;margin:0 0 4px}
+h3{font-size:15px;margin:0}
+p{margin:0 0 10px}
+.muted{color:var(--muted)}
+a{color:inherit}
+nav.toc{display:flex;flex-wrap:wrap;gap:6px 14px;margin:18px 0 28px;font-size:13px}
+nav.toc a{color:var(--muted);text-decoration:none;border-bottom:1px solid var(--line)}
+section.cat{border-top:1px solid var(--line);padding:28px 0}
+.cat-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:14px}
+.now{font-size:13px;color:var(--muted);max-width:640px}
+.opts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+@media (max-width:900px){.opts{grid-template-columns:minmax(0,1fr)}}
+.opt{background:var(--card);border:1px solid var(--line);border-radius:6px;display:flex;flex-direction:column;min-width:0}
+.opt.sel{outline:2px solid var(--pick);outline-offset:-1px}
+.opt-top{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px 14px 0}
+.opt-top b{font-size:14px}
+.opt label{font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--muted)}
+.prev{margin:10px 14px;border-radius:4px;overflow:hidden;min-height:150px}
+.why{padding:0 14px 14px;font-size:13px}
+.why p{margin:0 0 6px}
+.why .t{color:var(--muted)}
+.audit{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px}
+@media (max-width:900px){.audit{grid-template-columns:minmax(0,1fr)}}
+.audit ul{margin:6px 0 0;padding-left:18px;font-size:14px}
+.audit li{margin-bottom:6px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:500}
+.ok{color:#2f7d4a} .warn{color:#b0661c}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .ok{color:#6fc28a} :root:not([data-theme="light"]) .warn{color:#e6a35c}}
+.scroll{overflow-x:auto}
+.summary{position:sticky;bottom:0;background:var(--card);border-top:1px solid var(--line);padding:10px 16px;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;font-size:13px;z-index:5}
+.summary code{font:12px ui-monospace,monospace;white-space:normal}
+.summary button,.btnlink{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:4px;padding:6px 10px;cursor:pointer;text-decoration:none}
+.globes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+@media (max-width:900px){.globes{grid-template-columns:minmax(0,1fr)}}
+.gframe{aspect-ratio:16/10;background:#000;border-radius:4px;overflow:hidden;display:grid;place-items:center;color:#9a9ea5;font-size:13px}
+.gframe iframe{width:100%;height:100%;border:0}
+
+/* ---------- the three directions: their tokens ---------- */
+.dA{--c-bg:#101214;--c-s1:#16191c;--c-s2:#1d2125;--c-line:#2a2f35;--c-fg:#e6e7e8;--c-mu:#8e959d;--c-ac:#e6e7e8;--c-fire:#e8833a;--c-fire2:#ffcf7a;--c-cool:#6a9fd0;
+  --c-sans:"IBM Plex Sans",system-ui,sans-serif;--c-num:"IBM Plex Mono",ui-monospace,monospace;--c-head:"IBM Plex Sans",system-ui,sans-serif;--c-r:2px}
+.dB{--c-bg:#f5f3ee;--c-s1:#fbfaf7;--c-s2:#ecE9e1;--c-line:#d8d3c7;--c-fg:#1e2023;--c-mu:#6b6a64;--c-ac:#9c2f1c;--c-fire:#c2410c;--c-fire2:#f59e0b;--c-cool:#2f5d8a;
+  --c-sans:"Source Sans 3",system-ui,sans-serif;--c-num:"Source Sans 3",system-ui,sans-serif;--c-head:"Source Serif 4",Georgia,serif;--c-r:3px}
+.dC{--c-bg:#0b1118;--c-s1:#111a24;--c-s2:#18232f;--c-line:#22303e;--c-fg:#e3e9ef;--c-mu:#8796a6;--c-ac:#5fb3c8;--c-fire:#f08a3c;--c-fire2:#ffd27d;--c-cool:#5fb3c8;
+  --c-sans:"Public Sans",system-ui,sans-serif;--c-num:"Public Sans",system-ui,sans-serif;--c-head:"Public Sans",system-ui,sans-serif;--c-r:6px}
+.dA,.dB,.dC{background:var(--c-bg);color:var(--c-fg);font:13px/1.45 var(--c-sans);padding:14px}
+.dA .n,.dB .n,.dC .n{font-family:var(--c-num);font-variant-numeric:tabular-nums}
+.mu{color:var(--c-mu)}
+.k{font-size:11px;color:var(--c-mu)}
+.dA .k{font-family:var(--c-num);letter-spacing:0;text-transform:none}
+.dC .k{text-transform:uppercase;letter-spacing:.06em;font-weight:600;font-size:10.5px}
+.hr{height:1px;background:var(--c-line);margin:10px 0}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.sw{width:28px;height:28px;border-radius:var(--c-r);display:inline-block}
+.btn{font:500 13px var(--c-sans);border-radius:var(--c-r);padding:6px 11px;cursor:pointer;border:1px solid var(--c-line);background:var(--c-s1);color:var(--c-fg)}
+.seg{display:inline-flex;border:1px solid var(--c-line);border-radius:var(--c-r);overflow:hidden}
+.seg span{padding:5px 10px;font-size:12px;color:var(--c-mu);cursor:pointer}
+.seg span+span{border-left:1px solid var(--c-line)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Fire Pulse: design review</h1>
+  <p><b>Applied on 14 November 2026:</b> type=B, color=A, buttons=A, controls=C, answer=B, icons=C, charts=C, layout=B, globe=Standard + Minimal (switch on the map), motion=A, brand=B. Elements 8 (timeline) kept as it was.</p>
+  <p class="muted">Phase 1 audit and Phase 2 alternatives, kept as the record of the review. Pick A, B or C for each element (or none to keep what is there now), then send the summary line at the bottom. Each letter is one coherent direction, so picking the same letter everywhere gives a consistent result; mixing works too.</p>
+  <div class="row" style="gap:18px;margin:14px 0 0;font-size:14px">
+    <span><b>A · Instrument</b> <span class="muted">graphite, mono numbers, hairlines, no cards</span></span>
+    <span><b>B · Field atlas</b> <span class="muted">light paper, serif headings, cartographic</span></span>
+    <span><b>C · Console</b> <span class="muted">refined dark, one accent, tonal surfaces</span></span>
+  </div>
+  <nav class="toc" id="toc"></nav>
+
+  <section class="cat" id="audit">
+    <div class="cat-head"><h2>Phase 1 · Audit of the current interface</h2></div>
+    <div class="audit">
+      <div>
+        <h3>Patterns that read as generated or generic</h3>
+        <ul>
+          <li><b>Boxes inside boxes.</b> Three bordered 12 px cards (question, map, answer), then cards inside them (status, three tiles, list items). Every level has the same border and radius, so nothing leads.</li>
+          <li><b>Wizard numbering.</b> Circled 1, 2, 3, 4 before each heading. The controls are not a sequence; the numbers add noise.</li>
+          <li><b>Coloured left border on the status card</b> and an orange dashed note box: two very common template devices.</li>
+          <li><b>Space clichés on the globe.</b> Random starfield, blue atmosphere glow and dark limb shading compete with the fire data.</li>
+          <li><b>Typeface pairing.</b> Space Grotesk + Inter is one of the most used pairings in generated interfaces; Space Grotesk's quirky shapes also hurt digit reading.</li>
+          <li><b>Uppercase tracked eyebrows</b> ("THE ANSWER", "YOUR QUESTION", "WHOLE PLANET") on almost every block.</li>
+          <li><b>Text glyphs as icons</b> (▲ ▼ ● ▶) render differently per system font.</li>
+          <li><b>Emoji favicon</b> (🔥): the drawing comes from the visitor's system emoji font, not from us.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Inconsistencies</h3>
+        <ul>
+          <li><b>Radii:</b> 2, 4, 6, 8, 10, 12 and 999 px in use.</li>
+          <li><b>Font sizes:</b> 11, 12, 13, 14, 15, 17, 20, 22 and 24 px, with no scale.</li>
+          <li><b>Three palettes at once:</b> blue accent UI, orange fire ramp, and viridis on the confidence map, plus a blue-orange diverging ramp.</li>
+          <li><b>Tiles wrap badly</b> at 1024 px: "349,142 adjusted detections. A normal November week has about 259,694." breaks into six lines in a 105 px column.</li>
+          <li><b>Mobile:</b> the question panel takes the whole first screen; the answer comes after the map and the time bar.</li>
+          <li><b>Selected button colour</b> (light blue fill, dark text) is the strongest thing on screen, stronger than the fire data.</li>
+          <li><b>Era labels truncate</b> ("Old…") under the time slider.</li>
+        </ul>
+        <h3 style="margin-top:14px">Kept as is (works well)</h3>
+        <ul>
+          <li>The question → map → answer structure, the plain-language verdict, the calendar, the colour-blind-safe confidence ramp, keyboard focus outlines.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="cat" id="licensing">
+    <div class="cat-head"><h2>Phase 1 · Assets and licences</h2><span class="now">Full record in <code>ASSETS.md</code> at the repository root.</span></div>
+    <div class="scroll"><table>
+      <tr><th>Asset</th><th>Source</th><th>Licence</th><th>Commercial use</th><th>Attribution</th><th>Status</th></tr>
+      <tr><td>D3 7.9.0</td><td>github.com/d3/d3</td><td>ISC</td><td>Yes</td><td>Keep the copyright line in the file</td><td class="ok">OK</td></tr>
+      <tr><td>topojson-client 3.1.0</td><td>github.com/topojson/topojson-client</td><td>ISC</td><td>Yes</td><td>Keep the copyright line</td><td class="ok">OK</td></tr>
+      <tr><td>Country shapes 110m / 50m</td><td>world-atlas 2.0.2, from Natural Earth</td><td>ISC (package), public domain (data)</td><td>Yes</td><td>Credit Natural Earth (courtesy)</td><td class="ok">OK</td></tr>
+      <tr><td>States and place names</td><td>Natural Earth</td><td>Public domain</td><td>Yes</td><td>Courtesy credit</td><td class="ok">OK</td></tr>
+      <tr><td>Earth texture (realistic globe prototype)</td><td>Natural Earth II, shaded relief and water, 1:50m</td><td>Public domain</td><td>Yes</td><td>Courtesy credit</td><td class="ok">OK (new)</td></tr>
+      <tr><td>Inter, Space Grotesk</td><td>Google Fonts</td><td>SIL OFL 1.1</td><td>Yes</td><td>None in the page</td><td class="warn">OK, but loaded from Google's servers: visitors' IP addresses go to Google. Self-host before launch.</td></tr>
+      <tr><td>Favicon 🔥</td><td>Visitor's system emoji font (Apple, Google, Microsoft…)</td><td>Each vendor's own</td><td>Unclear</td><td>–</td><td class="warn">Replace with our own mark (see element 12)</td></tr>
+      <tr><td>Viridis colours (confidence map)</td><td>matplotlib colormaps</td><td>CC0</td><td>Yes</td><td>None</td><td class="ok">OK</td></tr>
+      <tr><td>Fire data</td><td>NASA FIRMS (MODIS C6.1, VIIRS 375 m)</td><td>NASA open data, no copyright in the US</td><td>Yes</td><td>FIRMS asks for an acknowledgement sentence</td><td class="ok">OK; keep it as data credit only. No NASA logo, seal or wording that implies endorsement.</td></tr>
+    </table></div>
+  </section>
+
+  <div id="cats"></div>
+
+  <section class="cat" id="globe">
+    <div class="cat-head"><h2>10 · Earth globe: the two requested prototypes</h2><span class="now">Working inside the real app, same data, rotation, zoom, timeline, selection and tooltips. Only the drawing of the base map differs. The switch at the top of the map changes it live; the default stays "Current".</span></div>
+    <div class="globes">
+      <div class="opt" data-cat="globe" data-v="current"><div class="opt-top"><b>Current</b><label><input type="radio" name="globe" value="current"> keep</label></div>
+        <div class="prev"><div class="gframe" data-src="/?globe=standard#a=world&t=2025-08"><button class="btnlink" type="button">Load live preview</button></div></div>
+        <div class="why"><p>Flat dark land on navy, starfield, blue glow.</p><p class="t">Familiar, but the space effects compete with the data.</p></div></div>
+      <div class="opt" data-cat="globe" data-v="realistic"><div class="opt-top"><b>Option 1 · Realistic (not chosen, removed)</b><label><input type="radio" name="globe" value="realistic"> pick</label></div>
+        <div class="prev"><div class="gframe" data-src="/?globe=standard#a=world&t=2025-08"><button class="btnlink" type="button">Load live preview</button></div></div>
+        <div class="why"><p>Natural Earth II relief and land cover, soft light from the upper left, thin atmosphere, faint borders. The texture darkens as you zoom in so fires keep contrast.</p><p class="t">Impressive at world scale. Where fire is dense (southern Africa in August) the fire layer and the tan land blend together. Costs more per frame (about 25 ms while spinning against about 5 ms).</p></div></div>
+      <div class="opt" data-cat="globe" data-v="scientific"><div class="opt-top"><b>Option 2 · Minimal scientific</b><label><input type="radio" name="globe" value="scientific"> pick</label></div>
+        <div class="prev"><div class="gframe" data-src="/?globe=minimal#a=world&t=2025-08"><button class="btnlink" type="button">Load live preview</button></div></div>
+        <div class="why"><p>Neutral graphite sphere, slightly lighter land, hairline borders and limb, faint graticule, no stars or glow. Fire squares drawn crisp, without the soft halo.</p><p class="t">Highest contrast for fire and cheapest to draw. Less "wow" in a pitch; relies on the data to be the picture.</p></div></div>
+    </div>
+    <p class="muted" style="margin-top:10px;font-size:13px">Open full screen: <a href="/?globe=standard">standard</a> · <a href="/?globe=minimal">minimal</a>. The switch is now always on the map. Previews load the full app (about 10 MB once, then cached).</p>
+  </section>
+</div>
+
+<div class="summary"><b>Your picks:</b> <code id="sumLine">none yet</code> <button type="button" id="copy">Copy</button> <button type="button" id="reset">Clear</button> <span id="copied" class="muted"></span></div>
+
+<script>
+/* Each element: what it is now, then A, B, C as [title, preview HTML, rationale, trade-off]. Previews use the
+   direction tokens (.dA .dB .dC) defined above. */
+const season = (stroke, band, med, cur, extra='') => {
+  const pts = [8,10,22,44,70,92,80,52,30,18,10,8], md = [9,12,20,38,58,74,70,48,28,16,10,9];
+  const x = i => 10 + i*22, y = v => 96 - v;
+  const P = a => a.map((v,i) => `${x(i)},${y(v)}`).join(' ');
+  return `<svg viewBox="0 0 262 110" width="100%" height="110" aria-hidden="true">
+    ${extra}
+    <polygon points="${md.map((v,i)=>`${x(i)},${y(v*1.25)}`).join(' ')} ${md.slice().reverse().map((v,i)=>`${x(11-i)},${y(v*.75)}`).join(' ')}" fill="${band}" />
+    <polyline points="${P(md)}" fill="none" stroke="${med}" stroke-width="1.4" stroke-dasharray="3 3"/>
+    <polyline points="${P(pts)}" fill="none" stroke="${cur}" stroke-width="2"/>
+    <circle cx="${x(5)}" cy="${y(92)}" r="3" fill="${cur}"/>
+  </svg>`;
+};
+const CATS = [
+ {id:'type', name:'1 · Typography', now:'Space Grotesk headings and figures, Inter body. Nine sizes from 11 to 24 px.',
+  A:['IBM Plex Sans + Plex Mono', `<div class="dA"><div class="k">area</div><div style="font:600 22px var(--c-head)">Zambia</div><div class="n" style="font-size:30px;font-weight:500;letter-spacing:-.02em">261,791</div><div class="mu">adjusted detections, August 2025</div><div class="hr"></div><div style="font-size:12px">Scale 11 · 13 · 16 · 22 · 30</div></div>`,
+     'A sans and a mono from one family. Every number is monospaced, so columns of figures line up and digits never jump while the timeline plays.', 'Mono numbers feel technical; less warm for a general audience.'],
+  B:['Source Serif 4 + Source Sans 3', `<div class="dB"><div class="k">Country</div><div style="font:600 24px var(--c-head)">Zambia</div><div class="n" style="font:600 30px var(--c-head)">261,791</div><div class="mu">adjusted detections, August 2025</div><div class="hr"></div><div style="font-size:12px">Scale 12 · 14 · 17 · 24 · 32</div></div>`,
+     'Serif headings like a printed atlas or a journal figure. Reads as considered and editorial; numbers in the serif have character.', 'Serifs at small sizes on a dark map need care; best paired with a light layout.'],
+  C:['Public Sans only', `<div class="dC"><div class="k">Country</div><div style="font:700 22px var(--c-head)">Zambia</div><div class="n" style="font:600 30px var(--c-num);letter-spacing:-.02em">261,791</div><div class="mu">adjusted detections, August 2025</div><div class="hr"></div><div style="font-size:12px">Scale 11 · 13 · 15 · 20 · 28</div></div>`,
+     'One neutral, very legible family designed for public-sector data interfaces. Weight and size alone build the hierarchy.', 'Plain; the identity has to come from colour and layout instead.']},
+ {id:'color', name:'2 · Colour and background', now:'Navy background with a blue tint, light-blue accent, orange fire ramp, viridis on one view.',
+  A:['Graphite, fire is the only colour', `<div class="dA"><div class="row"><span class="sw" style="background:#101214;outline:1px solid #2a2f35"></span><span class="sw" style="background:#1d2125"></span><span class="sw" style="background:#8e959d"></span><span class="sw" style="background:#e6e7e8"></span><span class="sw" style="background:linear-gradient(90deg,#3a1d0b,#e8833a,#ffcf7a);width:84px"></span></div><div class="hr"></div><div>UI in greys. Orange appears only where there is fire. The diverging view uses steel blue to orange.</div></div>`,
+     'Neutral greys do not tint the data, and fire becomes the most saturated thing on screen.', 'Selected states need contrast from weight and fill, not colour.'],
+  B:['Warm paper, ink and ember', `<div class="dB"><div class="row"><span class="sw" style="background:#f5f3ee;outline:1px solid #d8d3c7"></span><span class="sw" style="background:#ecE9e1"></span><span class="sw" style="background:#6b6a64"></span><span class="sw" style="background:#1e2023"></span><span class="sw" style="background:linear-gradient(90deg,#fde7c4,#f59e0b,#c2410c,#7c1d06);width:84px"></span></div><div class="hr"></div><div>Light interface; the globe sits in a dark inset so fires still glow.</div></div>`,
+     'Light pages print, project and screenshot well in slides; reads like a report.', 'Two surfaces (light page, dark map) to maintain; fire ramp must run light-to-dark on paper.'],
+  C:['Deep slate, one teal accent', `<div class="dC"><div class="row"><span class="sw" style="background:#0b1118;outline:1px solid #22303e"></span><span class="sw" style="background:#18232f"></span><span class="sw" style="background:#8796a6"></span><span class="sw" style="background:#5fb3c8"></span><span class="sw" style="background:linear-gradient(90deg,#3d1a08,#f08a3c,#ffd27d);width:84px"></span></div><div class="hr"></div><div>Close to today's mood, desaturated. Teal for interaction, orange for data.</div></div>`,
+     'Least disruptive change; keeps the night-view feel the team already likes.', 'Dark blue + teal is a common dashboard look; identity comes from restraint, not novelty.']},
+ {id:'buttons', name:'3 · Buttons and toggles', now:'8 px rounded, light-blue fill when selected, pill chips for quick places.',
+  A:['Hairline, underline for selection', `<div class="dA"><div class="row"><button class="btn" style="background:#e6e7e8;color:#101214;border-color:#e6e7e8">Fly there</button><button class="btn">Draw a box</button></div><div class="hr"></div><div class="row" style="gap:16px;font-size:12px"><span style="border-bottom:2px solid #e6e7e8;padding-bottom:3px">Latest month</span><span class="mu">Last 7 days</span><span class="mu">Pick a month</span></div><div class="hr"></div><div class="row mu" style="font-size:12px;gap:12px"><span>Mexico</span><span>Brazil</span><span>Zambia</span><span>Indonesia</span></div></div>`,
+     'Tabs as text with an underline; quick places as plain links. Fewer shapes on screen.', 'Text-only controls need generous hit areas (at least 32 px tall) to stay easy to tap.'],
+  B:['Solid ink primary, outlined secondary', `<div class="dB"><div class="row"><button class="btn" style="background:#1e2023;color:#f5f3ee;border-color:#1e2023">Fly there</button><button class="btn" style="background:transparent">Draw a box</button></div><div class="hr"></div><div class="seg"><span style="background:#1e2023;color:#f5f3ee">Latest month</span><span>Last 7 days</span><span>Pick a month</span></div><div class="hr"></div><div class="row" style="font-size:12px;gap:6px"><span style="border:1px solid #d8d3c7;padding:2px 8px;border-radius:3px">Mexico</span><span style="border:1px solid #d8d3c7;padding:2px 8px;border-radius:3px">Brazil</span><span style="border:1px solid #d8d3c7;padding:2px 8px;border-radius:3px">Zambia</span></div></div>`,
+     'Classic, unambiguous: one dark primary per area, segmented control for exclusive choices.', 'Conventional; does little for identity on its own.'],
+  C:['Tonal fills, accent ring on focus', `<div class="dC"><div class="row"><button class="btn" style="background:#5fb3c8;color:#071017;border-color:#5fb3c8;font-weight:600">Fly there</button><button class="btn" style="border-color:transparent;background:#18232f">Draw a box</button></div><div class="hr"></div><div class="seg" style="background:#111a24;border-color:transparent;padding:2px"><span style="background:#22303e;color:#e3e9ef;border-radius:4px">Latest month</span><span style="border:0">Last 7 days</span><span style="border:0">Pick a month</span></div><div class="hr"></div><div class="row" style="font-size:12px;gap:6px"><span style="background:#18232f;padding:3px 9px;border-radius:4px">Mexico</span><span style="background:#18232f;padding:3px 9px;border-radius:4px">Brazil</span><span style="background:#18232f;padding:3px 9px;border-radius:4px">Zambia</span></div></div>`,
+     'No borders; depth from tone. Selection is a raised tile, not a bright fill, so it stays quieter than the data.', 'Low-contrast tones need checking on cheap projectors.']},
+ {id:'controls', name:'4 · Question panel (navigation and controls)', now:'Left column with numbered steps 1 to 4, chips, buttons, radio list with help text.',
+  A:['Labelled sections, no numbers', `<div class="dA" style="font-size:12px"><div class="k">Where</div><div style="border-bottom:1px solid #2a2f35;padding:5px 0" class="mu">Search a country</div><div class="row mu" style="gap:10px;margin:6px 0 10px"><span>Draw box</span><span>Draw shape</span><span>Planet</span></div><div class="k">When</div><div style="margin:4px 0 10px">Latest month · <span class="mu">7 days · Pick</span></div><div class="k">Show</div><div>● Amount  <span class="mu">○ vs normal  ○ confidence</span></div></div>`,
+     'Same column, quieter: small labels, hairline input, help text moved into tooltips.', 'Help text hidden behind hover is less discoverable for first-time users.'],
+  B:['One sentence you edit', `<div class="dB" style="font:15px/1.9 var(--c-head)">Show <u style="text-decoration-color:#9c2f1c">amount of fire</u> in <u style="text-decoration-color:#9c2f1c">Zambia</u> for <u style="text-decoration-color:#9c2f1c">August 2025</u>, <u style="text-decoration-color:#9c2f1c">all fires</u>.<div class="mu" style="font:12px var(--c-sans);margin-top:6px">Each underlined part opens its own picker.</div></div>`,
+     'The question reads as a question. Distinctive, self-explaining, and frees the left column for the map.', 'Needs new picker popovers (presentation only, but more work); drawing tools need a separate entry point.'],
+  C:['Top toolbar', `<div class="dC" style="font-size:12px"><div class="row" style="gap:6px"><span style="background:#18232f;padding:5px 9px;border-radius:6px;flex:1">⌕ Zambia</span><span style="background:#18232f;padding:5px 9px;border-radius:6px">Aug 2025 ▾</span><span style="background:#18232f;padding:5px 9px;border-radius:6px">Amount ▾</span><span style="background:#18232f;padding:5px 9px;border-radius:6px">All ▾</span></div><div class="mu" style="margin-top:10px">Map and answer get the full width below.</div></div>`,
+     'Familiar from mapping tools; the map gets about 300 px more width.', 'Dropdowns hide the options until opened; slightly more clicks.']},
+ {id:'answer', name:'5 · Answer panel (cards and information)', now:'Status card with coloured left border, three equal tiles, list of places as bordered cards.',
+  A:['Ledger rows, no cards', `<div class="dA"><div style="font:600 16px var(--c-head)">Much higher than normal</div><div class="mu" style="font-size:12px">29 % above a normal August</div><div class="hr"></div><div class="row" style="justify-content:space-between"><span class="mu">August 2025</span><span class="n">261,791</span></div><div class="row" style="justify-content:space-between"><span class="mu">Normal August</span><span class="n">202,759</span></div><div class="row" style="justify-content:space-between"><span class="mu">Last 7 days</span><span class="n">3,652</span></div></div>`,
+     'Label left, number right, hairline separators. Scans like an instrument readout; no wrapping problems.', 'Less visual punch for the headline number.'],
+  B:['Headline sentence and one big figure', `<div class="dB"><div style="font:600 20px/1.2 var(--c-head)">August burned 29&nbsp;% more than normal in Zambia.</div><div class="row" style="margin-top:10px;align-items:baseline;gap:6px"><span class="n" style="font:600 28px var(--c-head)">261,791</span><span class="mu">detections · normal 202,759</span></div></div>`,
+     'Leads with the answer in words, like a news graphic. Strong for the pitch and for decision makers.', 'Sentences must be generated for every case (already done for the status line).'],
+  C:['One summary block with a delta', `<div class="dC"><div class="k">August 2025</div><div class="row" style="align-items:baseline;gap:8px"><span class="n" style="font:600 28px var(--c-num)">261,791</span><span style="background:rgba(240,138,60,.16);color:#f6a868;padding:2px 7px;border-radius:4px;font-size:12px">+29 % vs normal</span></div><div class="mu" style="font-size:12px;margin-top:4px">Normal 202,759 · last 7 days 3,652</div></div>`,
+     'One block, one number, one delta. Compact and easy to compare when switching places.', 'Delta badges are a common dashboard device; must stay the only one on screen.']},
+ {id:'icons', name:'6 · Icons and status indicators', now:'Text glyphs ▲ ▼ ● ▶, coloured left border, emoji favicon.',
+  A:['Words and a small square', `<div class="dA"><div class="row"><span style="width:8px;height:8px;background:#e8833a;display:inline-block"></span><b>Higher</b><span class="mu">than normal</span></div><div class="row" style="margin-top:8px"><span style="width:8px;height:8px;background:#6a9fd0;display:inline-block"></span><b>Lower</b><span class="mu">than normal</span></div><div class="row" style="margin-top:8px"><span style="width:8px;height:8px;background:#8e959d;display:inline-block"></span><b>Normal</b></div></div>`,
+     'No icon set at all: a colour key square matching the map ramp, and the word.', 'Relies on reading; fine for this audience.'],
+  B:['Original line icons (inline SVG)', `<div class="dB"><div class="row"><svg width="18" height="18" viewBox="0 0 18 18"><path d="M3 12l6-6 6 6" fill="none" stroke="#c2410c" stroke-width="1.8"/></svg><b>Higher than normal</b></div><div class="row" style="margin-top:8px"><svg width="18" height="18" viewBox="0 0 18 18"><path d="M3 6l6 6 6-6" fill="none" stroke="#2f5d8a" stroke-width="1.8"/></svg><b>Lower than normal</b></div><div class="row" style="margin-top:8px"><svg width="18" height="18" viewBox="0 0 18 18"><path d="M3 9h12" stroke="#6b6a64" stroke-width="1.8"/></svg><b>Normal</b></div></div>`,
+     'A handful of icons we draw ourselves (chevrons, play, pause, box, polygon), so no licence questions and one consistent stroke.', 'About ten small SVGs to draw and keep consistent.'],
+  C:['Gauge marker on a scale', `<div class="dC"><div style="position:relative;height:10px;border-radius:5px;background:linear-gradient(90deg,#5fb3c8,#3b4a59 45%,#3b4a59 55%,#f08a3c)"><span style="position:absolute;left:72%;top:-4px;width:2px;height:18px;background:#e3e9ef"></span></div><div class="row mu" style="justify-content:space-between;font-size:11px;margin-top:6px"><span>¼×</span><span>normal</span><span>4×</span></div><div style="margin-top:6px"><b>Higher than normal</b> <span class="mu">· 1.3×</span></div></div>`,
+     'The indicator is the scale itself, the same ramp the map uses, so the answer and the map speak one language.', 'Takes a full row; less compact than a word.']},
+ {id:'charts', name:'7 · Charts, legends, calendar', now:'Season chart with band and median, year bars, burning calendar grid, legends floating on the map.',
+  A:['Thin lines, direct labels', `<div class="dA">${season('', 'rgba(142,149,157,.16)', '#8e959d', '#e8833a', '<text x="232" y="20" fill="#8e959d" font-size="9" font-family="IBM Plex Mono">2025</text>')}<div class="row k" style="justify-content:space-between"><span>Jan</span><span>Jun</span><span>Dec</span></div></div>`,
+     'Labels sit on the lines instead of in a separate key; axis text in mono; no gridlines.', 'Direct labels need collision handling when lines cross.'],
+  B:['Annotated, figure-style', `<div class="dB">${season('', 'rgba(107,106,100,.16)', '#6b6a64', '#c2410c', '<line x1="120" x2="120" y1="4" y2="96" stroke="#d8d3c7"/><text x="124" y="12" fill="#6b6a64" font-size="10" font-family="Source Serif 4">peak, June</text>')}<div class="mu" style="font-size:11px">Fig. 2 — Detections per month, 2025 against 2003–2020.</div></div>`,
+     'Charts carry a caption and one annotation, like a journal figure. Great in screenshots and slides.', 'Captions add height in a narrow panel.'],
+  C:['Filled area and bars', `<div class="dC"><svg viewBox="0 0 262 110" width="100%" height="110" aria-hidden="true">${[8,10,22,44,70,92,80,52,30,18,10,8].map((v,i)=>`<rect x="${10+i*21}" y="${100-v}" width="15" height="${v}" rx="2" fill="${i===7?'#f08a3c':'#2b3b4b'}"/>`).join('')}<polyline points="${[9,12,20,38,58,74,70,48,28,16,10,9].map((v,i)=>`${17+i*21},${100-v}`).join(' ')}" fill="none" stroke="#5fb3c8" stroke-width="1.5" stroke-dasharray="3 3"/></svg><div class="mu" style="font-size:11px">Bars: 2025. Dashed: normal. Selected month in orange.</div></div>`,
+     'Bars make single months easy to point at and compare with the normal line.', 'The middle-half band is harder to show on bars.']},
+ {id:'timeline', name:'8 · Timeline, slider, filters', now:'Native range slider with Play button and three coloured era strips underneath; labels truncate.',
+  A:['Ruler with ticks', `<div class="dA"><div class="row" style="justify-content:space-between"><span class="n" style="font-size:15px">2025-08</span><span class="mu" style="font-size:11px">VIIRS, measured</span></div><svg viewBox="0 0 300 30" width="100%" height="30">${Array.from({length:26},(_,i)=>`<line x1="${6+i*11.4}" x2="${6+i*11.4}" y1="${i%5===0?6:12}" y2="20" stroke="#8e959d" stroke-width="${i%5===0?1.2:.6}"/>`).join('')}<rect x="6" y="23" width="125" height="2" fill="#6a9fd0"/><rect x="131" y="23" width="163" height="2" fill="#e6e7e8"/><line x1="291" x2="291" y1="2" y2="26" stroke="#e8833a" stroke-width="2"/></svg><div class="row k" style="justify-content:space-between"><span>2000</span><span>2012 VIIRS starts</span><span>2025</span></div></div>`,
+     'Reads like a scientific instrument; the era change is one labelled tick, not three strips.', 'Custom control on top of the native range input (kept for keyboard and screen readers).'],
+  B:['Year row and month row', `<div class="dB"><div class="row" style="font-size:11px;gap:4px;flex-wrap:nowrap;overflow:hidden">${['2018','2019','2020','2021','2022','2023','2024','2025'].map(y=>`<span style="padding:2px 5px;${y==='2025'?'background:#1e2023;color:#f5f3ee;':''}border-radius:3px">${y}</span>`).join('')}</div><div class="row" style="font-size:11px;gap:2px;margin-top:6px">${'JFMAMJJASOND'.split('').map((m,i)=>`<span style="width:18px;text-align:center;padding:2px 0;${i===7?'border-bottom:2px solid #9c2f1c':''}">${m}</span>`).join('')}</div></div>`,
+     'Two direct pickers; no dragging needed, easy on touch screens and for jumping to a date.', 'Loses the feel of scrubbing through 25 years; Play still animates.'],
+  C:['Scrubber over a sparkline', `<div class="dC"><svg viewBox="0 0 300 40" width="100%" height="40">${Array.from({length:26},(_,i)=>{const h=8+22*Math.abs(Math.sin(i*.9)+Math.sin(i*.31))/2;return `<rect x="${4+i*11.3}" y="${34-h}" width="8" height="${h}" rx="1.5" fill="${i===25?'#f08a3c':'#22303e'}"/>`}).join('')}<line x1="290" x2="290" y1="0" y2="38" stroke="#5fb3c8" stroke-width="2"/></svg><div class="row mu" style="justify-content:space-between;font-size:11px"><span>2000</span><span>Aug 2025 · 261,791</span><span>2025</span></div></div>`,
+     'The slider shows how much burned each year, so you can spot big years before you drag to them.', 'Needs the yearly totals for the selected area (already computed for the calendar).']},
+ {id:'layout', name:'9 · Layout, spacing, sections', now:'Three bordered columns at 1440 px; a strip on top at 1024 px; one long column on phones with the question first.',
+  A:['Three columns, no borders, 8 px grid', `<div class="dA"><svg viewBox="0 0 300 150" width="100%" height="150"><rect x="0" y="0" width="70" height="150" fill="#16191c"/><rect x="76" y="0" width="148" height="122" fill="#0a0b0c"/><rect x="76" y="128" width="148" height="22" fill="#16191c"/><rect x="230" y="0" width="70" height="150" fill="#16191c"/><circle cx="150" cy="61" r="44" fill="#1d2125"/></svg></div>`,
+     'Keeps today\'s structure; removes borders and outer radius, aligns everything to 8 px.', 'Smallest visual jump.'],
+  B:['Map left, report right', `<div class="dB"><svg viewBox="0 0 300 150" width="100%" height="150"><rect x="0" y="0" width="300" height="18" fill="#ecE9e1"/><rect x="0" y="22" width="180" height="128" fill="#101214"/><circle cx="90" cy="86" r="48" fill="#1d2125"/><rect x="186" y="22" width="114" height="10" fill="#d8d3c7"/><rect x="186" y="38" width="90" height="6" fill="#d8d3c7"/><rect x="186" y="54" width="114" height="40" fill="#ecE9e1"/><rect x="186" y="100" width="114" height="50" fill="#ecE9e1"/></svg></div>`,
+     'Question as a top bar (or sentence), map and report side by side. Like a figure next to its text.', 'Fewer options visible at once; advanced filters move into the bar.'],
+  C:['Map first, report scrolls', `<div class="dC"><svg viewBox="0 0 300 150" width="100%" height="150"><rect x="0" y="0" width="300" height="18" fill="#18232f"/><rect x="0" y="22" width="300" height="78" fill="#070b10"/><circle cx="150" cy="61" r="34" fill="#18232f"/><rect x="0" y="106" width="96" height="44" fill="#111a24"/><rect x="102" y="106" width="96" height="44" fill="#111a24"/><rect x="204" y="106" width="96" height="44" fill="#111a24"/></svg></div>`,
+     'Map full width on top, the answer in sections below. Works the same on phones, where the answer comes right after the map.', 'On a laptop the answer starts below the fold.']},
+ {id:'motion', name:'11 · Loading, tooltips, transitions', now:'Centred text while loading; dark tooltip with border; 200 ms fades; globe spins on start.',
+  A:['Determinate progress, plain tooltip', `<div class="dA"><div class="mu" style="font-size:12px">Loading 25 years of detections · 6.1 of 9.7 MB</div><div style="height:2px;background:#2a2f35;margin:6px 0 14px"><div style="width:63%;height:2px;background:#e6e7e8"></div></div><div style="display:inline-block;background:#e6e7e8;color:#101214;padding:4px 8px;font-size:12px;border-radius:2px"><span class="n">1,240</span> detections · Aug 2025</div></div>`,
+     'Says exactly what is happening and how long. Inverted tooltip is readable over any map colour. No spin on start.', 'The globe starts still; less immediate movement in a demo.'],
+  B:['Skeleton of the answer, captioned tooltip', `<div class="dB"><div style="height:12px;width:60%;background:#ecE9e1;border-radius:3px"></div><div style="height:22px;width:40%;background:#ecE9e1;border-radius:3px;margin:8px 0"></div><div style="height:10px;width:80%;background:#ecE9e1;border-radius:3px;margin-bottom:14px"></div><div style="display:inline-block;background:#fbfaf7;border:1px solid #d8d3c7;padding:6px 9px;font-size:12px;box-shadow:0 1px 2px rgba(0,0,0,.08)"><b>Kasempa</b><br><span class="mu">1,240 detections, August 2025</span></div></div>`,
+     'The layout appears at once and fills in; the page never looks empty.', 'Skeletons are common; keep them brief and grey.'],
+  C:['Slow fade-in of the fire layer', `<div class="dC"><div class="row" style="gap:3px">${Array.from({length:18},(_,i)=>`<span style="width:10px;height:10px;border-radius:2px;background:#f08a3c;opacity:${(i/18).toFixed(2)}"></span>`).join('')}</div><div class="mu" style="font-size:12px;margin:8px 0 14px">Base map first, then the fire layer fades in over 400 ms.</div><div style="display:inline-block;background:#18232f;padding:6px 9px;font-size:12px;border-radius:6px"><span class="n">1,240</span> <span class="mu">detections</span></div></div>`,
+     'One calm entrance that draws the eye to the data. Respects reduced-motion settings.', 'The first 400 ms show an empty globe.']},
+ {id:'brand', name:'12 · Brand mark and favicon', now:'Emoji 🔥 favicon, the name set in Space Grotesk.',
+  A:['Wordmark and ember square', `<div class="dA"><div class="row" style="gap:10px"><svg width="34" height="34" viewBox="0 0 32 32"><rect width="32" height="32" fill="#16191c"/><rect x="11" y="11" width="10" height="10" fill="#e8833a"/></svg><span style="font:500 18px var(--c-num)">fire&nbsp;pulse</span></div><div class="mu" style="font-size:12px;margin-top:8px">The square is one grid cell with fire: the data unit itself.</div></div>`,
+     'Minimal and ownable; scales to a 16 px favicon.', 'Very quiet; recognition comes from use, not from the mark.'],
+  B:['Globe lines with one hot point', `<div class="dB"><div class="row" style="gap:10px"><svg width="34" height="34" viewBox="0 0 32 32"><circle cx="16" cy="16" r="13" fill="none" stroke="#1e2023" stroke-width="1.6"/><ellipse cx="16" cy="16" rx="6" ry="13" fill="none" stroke="#1e2023" stroke-width="1.2"/><path d="M3 16h26" stroke="#1e2023" stroke-width="1.2"/><circle cx="21" cy="11" r="3" fill="#c2410c"/></svg><span style="font:600 19px var(--c-head)">Fire Pulse</span></div><div class="mu" style="font-size:12px;margin-top:8px">Our own drawing; not based on any agency insignia.</div></div>`,
+     'Says "Earth" and "fire" at once; classic cartographic feel.', 'Globe marks are common; keep it simple and avoid any resemblance to agency seals.'],
+  C:['Pulse line', `<div class="dC"><div class="row" style="gap:10px"><svg width="34" height="34" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#111a24"/><path d="M4 18h6l3-8 4 13 3-7h8" fill="none" stroke="#f08a3c" stroke-width="2.2" stroke-linejoin="round"/></svg><span style="font:700 18px var(--c-head)">Fire Pulse</span></div><div class="mu" style="font-size:12px;margin-top:8px">A trace that rises with fire activity: the name, drawn.</div></div>`,
+     'Literal and memorable; works in one colour.', 'Pulse lines are often used for health products; context makes it read as data.']},
+];
+
+const $ = id => document.getElementById(id);
+const store = (() => { try { const k = 'fp-design-picks'; return {get:() => JSON.parse(localStorage.getItem(k) || '{}'), set:v => localStorage.setItem(k, JSON.stringify(v))}; } catch(e){ return {get:() => ({}), set:() => {}}; } })();
+let picks = {}; try { picks = store.get(); } catch(e){ picks = {}; }
+
+$('cats').innerHTML = CATS.map(c => `
+  <section class="cat" id="${c.id}">
+    <div class="cat-head"><h2>${c.name}</h2><span class="now"><b>Now:</b> ${c.now}</span></div>
+    <div class="opts">${['A','B','C'].map(L => { const [t, prev, why, cost] = c[L]; return `
+      <div class="opt" data-cat="${c.id}" data-v="${L}">
+        <div class="opt-top"><b>${L} · ${t}</b><label><input type="radio" name="${c.id}" value="${L}"> pick</label></div>
+        <div class="prev">${prev}</div>
+        <div class="why"><p>${why}</p><p class="t">Trade-off: ${cost}</p></div>
+      </div>`; }).join('')}</div>
+  </section>`).join('');
+// the globe section sits between 9 and 11 in reading order
+const globeSec = $('globe'); $('cats').insertBefore(globeSec, $('motion'));
+$('toc').innerHTML = [...document.querySelectorAll('section.cat')].map(s => `<a href="#${s.id}">${s.querySelector('h2').textContent.replace(/^Phase 1 · /, '')}</a>`).join('');
+
+function sync(){
+  document.querySelectorAll('.opt').forEach(o => { const on = picks[o.dataset.cat] === o.dataset.v; o.classList.toggle('sel', on); const r = o.querySelector('input'); if(r) r.checked = on; });
+  const order = [...CATS.slice(0, 9).map(c => c.id), 'globe', 'motion', 'brand'];
+  const parts = order.filter(k => picks[k]).map(k => `${k}=${picks[k]}`);
+  $('sumLine').textContent = parts.length ? parts.join(', ') : 'none yet';
+  try { store.set(picks); } catch(e){}
+}
+document.addEventListener('change', e => { if(e.target.matches('.opt input[type=radio]')){ picks[e.target.name] = e.target.value; sync(); } });
+$('reset').onclick = () => { picks = {}; sync(); };
+$('copy').onclick = () => { const t = 'Design picks: ' + $('sumLine').textContent; (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => { $('copied').textContent = 'Copied'; }, () => { $('copied').textContent = 'Select the line and copy it'; }); };
+document.querySelectorAll('.gframe button').forEach(b => b.onclick = () => { const f = b.parentElement; f.innerHTML = `<iframe src="${f.dataset.src}" title="Globe preview" loading="lazy"></iframe>`; });
+sync();
+</script>
+</body>
+</html>
