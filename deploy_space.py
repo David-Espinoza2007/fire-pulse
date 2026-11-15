@@ -40,7 +40,7 @@ def data_files(data, archive):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--name", default="blaze-bridge", help="name of the Space; the data repository is <name>-data")
+    ap.add_argument("--name", default="map", help="name of the Space; the data repository is <name>-data")
     ap.add_argument("--data", type=Path, default=HERE / "data", help="folder that holds world/ and reference/")
     ap.add_argument("--archive", action="store_true", help="also send world/hotspots")
     ap.add_argument("--dry-run", action="store_true")

@@ -198,7 +198,7 @@ in the address selects a set.
   build, and the API on the Mexico data.
 - `ASSETS.md` - every third-party asset (fonts, Earth texture) and its licence.
 - `Dockerfile`, `deploy_space.py` - publish the app as a Hugging Face Docker Space, with the data in a
-  dataset repository. Public page: https://averagecasual-blaze-bridge.hf.space
+  dataset repository. Public page: https://blazebridge-map.hf.space
 - `SLIDES.md` - draft of the 7 slides. `screenshots/` - pictures for them (older layout).
 
 ## Limits
