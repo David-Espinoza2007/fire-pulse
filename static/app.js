@@ -944,7 +944,8 @@ function loadMP(vb){   // on still frames: one request for the view and a margin
   mpWant = key; mpBusy = m + dd;
   fetchMP(m, dd, box).then(o => { if(mpWant !== key) return;   // replaced by a newer request
       MP = o; mpBusy = ''; dirty = true; legend();
-      if(dd && dayOn()) $('sensorNow').textContent = daySpan(); })
+      if(dd && dayOn()) $('sensorNow').textContent = daySpan();
+      const a = dd && dayAfter(state.t, dd); if(a) fetchMP(ymOf(a[0]), a[1], box).catch(() => {}); })   // the next day, ahead: Play and the next-day arrow then show it at once
     .catch(err => { if(mpWant !== key) return;
       if(err.status !== 404){ setTimeout(() => { if(mpWant === key){ mpWant = mpBusy = ''; dirty = true; } }, 3000); return; }   // server busy or restarting: try again
       mpBusy = '';
