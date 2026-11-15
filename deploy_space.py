@@ -1,4 +1,5 @@
 """Publish Fire Pulse as a public Hugging Face Docker Space. The data goes to a dataset repository, the code to the Space.
+Hugging Face creates a Docker Space only for accounts with a PRO plan (checked 15 Nov 2026: without it the request fails with error 402).
 
     hf auth login                        # once, with a token that can write
     python deploy_space.py --dry-run     # list what would be sent, send nothing
@@ -61,6 +62,7 @@ if __name__ == "__main__":
     api.create_repo(data_id, repo_type="dataset", exist_ok=True)
     patterns = ["world/serve/**", "reference/*.parquet"] + (["world/hotspots/*/*.parquet"] if args.archive else [])
     api.upload_folder(repo_id=data_id, repo_type="dataset", folder_path=args.data, allow_patterns=patterns, ignore_patterns=["*.part"],
+                      delete_patterns=["world/serve/**"],   # tiles of an older build must not stay
                       commit_message="Fire Pulse data")
     commit = api.dataset_info(data_id).sha
     api.create_repo(space_id, repo_type="space", space_sdk="docker", exist_ok=True)
