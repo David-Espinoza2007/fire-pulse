@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fire Pulse modes review</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23101214'/%3E%3Ccircle cx='16' cy='16' r='11' fill='none' stroke='%23e6e7e8' stroke-width='1.8'/%3E%3Cellipse cx='16' cy='16' rx='5' ry='11' fill='none' stroke='%23e6e7e8' stroke-width='1.3'/%3E%3Cpath d='M5 16h22' stroke='%23e6e7e8' stroke-width='1.3'/%3E%3Ccircle cx='21' cy='11' r='3.2' fill='%23ff5a0a'/%3E%3C/svg%3E">
+<!-- Source Serif 4 and Source Sans 3: SIL Open Font License 1.1 -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap">
+<style>
+/* Same tokens as the app (graphite, fire as the only colour, Source Serif + Source Sans, 3 px radius). */
+:root{--bg:#101214;--surface:#16191c;--surface-2:#1d2125;--line:#2a2f35;--line-2:#3a4047;--fg:#e6e7e8;--muted:#8e959d;
+  --fire-lo:#6b1503;--fire-mid:#ff5a0a;--fire-hi:#ffc93c;--cool:#6a9fd0;--neutral:#5c636b;--ok:#6fc28a;--plan:#d9a54a;
+  --display:"Source Serif 4",Georgia,serif;--body:"Source Sans 3",system-ui,sans-serif;--r:3px;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 var(--body)}
+.wrap{max-width:1280px;margin:0 auto;padding:32px 16px 96px}
+h1{font:600 30px/1.15 var(--display);margin:0 0 8px}
+h2{font:600 22px/1.2 var(--display);margin:0 0 6px}
+h3{font:600 16px/1.25 var(--display);margin:0 0 6px}
+p{margin:0 0 10px}
+.muted{color:var(--muted)}
+a{color:var(--fg)}
+code{font:12px ui-monospace,Menlo,monospace}
+nav.toc{display:flex;flex-wrap:wrap;gap:6px 16px;margin:16px 0 8px;font-size:14px}
+nav.toc a{color:var(--muted);text-decoration:none;border-bottom:1px solid var(--line)}
+section.part{border-top:1px solid var(--line);padding:32px 0}
+.lead{max-width:760px}
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 6px;border-radius:2px;border:1px solid;white-space:nowrap;vertical-align:1px}
+.tag.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 50%,transparent)}
+.tag.re{color:var(--fg);border-color:var(--line-2)}
+.tag.plan{color:var(--plan);border-color:color-mix(in srgb,var(--plan) 55%,transparent)}
+.scroll{overflow-x:auto}
+table.audit{border-collapse:collapse;width:100%;font-size:14px}
+.audit th,.audit td{text-align:left;padding:7px 10px 7px 0;border-bottom:1px solid var(--line);vertical-align:top}
+.audit th{color:var(--muted);font-weight:500}
+.audit td:first-child{font-weight:600;white-space:nowrap}
+.cols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+@media (max-width:900px){.cols{grid-template-columns:minmax(0,1fr)}}
+.wire{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:12px}
+.wire svg{display:block;width:100%;height:auto}
+.wire p{font-size:14px;margin:10px 0 0}
+
+/* ---------- prototype screens: mock interface over the real, live globe ---------- */
+.screen{position:relative;aspect-ratio:16/9;min-height:520px;background:#0c0e10;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;margin-top:14px;font-size:13px}
+@media (max-width:900px){.screen{aspect-ratio:auto;height:640px}}
+.screen .globe-slot{position:absolute;inset:44px 0 0 0;display:grid;place-items:center;background:#0c0e10}
+.screen .globe-slot iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+.screen .globe-slot .load{position:relative;z-index:1}
+.ui{position:absolute;inset:0;pointer-events:none}
+.ui > *{pointer-events:auto}
+.nav{position:absolute;top:0;left:0;right:0;height:44px;display:flex;align-items:center;gap:12px;padding:0 14px;background:var(--bg);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:7px;font:600 17px var(--display);white-space:nowrap}
+.srch{flex:0 1 260px;height:28px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface);color:var(--muted);display:flex;align-items:center;padding:0 9px;font-size:13px}
+.lnk{color:var(--muted);font-size:13px;white-space:nowrap}
+.sp{flex:1}
+.modesw{display:inline-flex;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.modesw button{font:500 13px var(--body);color:var(--muted);background:none;border:0;padding:5px 11px;cursor:pointer}
+.modesw button + button{border-left:1px solid var(--line)}
+.modesw button[aria-pressed="true"]{color:var(--bg);background:var(--fg)}
+.btn{font:500 13px var(--body);color:var(--fg);background:rgba(16,18,20,.86);border:1px solid var(--line);border-radius:var(--r);padding:4px 10px;cursor:pointer;white-space:nowrap}
+.btn.on{border-color:var(--fg);background:var(--surface-2)}
+.dock{position:absolute;left:0;right:0;bottom:0;background:var(--bg);border-top:1px solid var(--line);padding:10px 14px 12px;display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:6px 14px;align-items:center}
+.dock .date{font:600 20px/1 var(--display);white-space:nowrap;font-variant-numeric:tabular-nums}
+.ctl{display:flex;gap:4px;align-items:center}
+.ibtn{width:30px;height:30px;display:grid;place-items:center;border:1px solid var(--line);border-radius:var(--r);background:none;color:var(--fg);cursor:pointer;padding:0}
+.ibtn.play{width:38px;background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.track{position:relative;height:42px}
+.track .bars{position:absolute;left:0;right:0;bottom:12px;height:24px;display:flex;align-items:flex-end;gap:2px}
+.track .bars i{flex:1;background:#2b3036;border-radius:1px 1px 0 0}
+.track .bars i.in{background:color-mix(in srgb,var(--fire-mid) 55%,#2b3036)}
+.track .bars i.now{background:var(--fire-mid)}
+.track .trk{position:absolute;left:0;right:0;bottom:6px;height:2px;background:var(--line-2)}
+.track .sel{position:absolute;bottom:6px;height:2px;background:var(--fg)}
+.track .hd{position:absolute;bottom:1px;width:3px;height:12px;background:var(--fg);border-radius:1px;margin-left:-1px}
+.track .cur{position:absolute;bottom:0;top:2px;width:2px;background:var(--fire-hi);margin-left:-1px}
+.track .yrs{position:absolute;left:0;right:0;bottom:-12px;display:flex;justify-content:space-between;font-size:10px;color:var(--muted)}
+.speed{display:flex;gap:10px;font-size:12px;color:var(--muted)} .speed b{color:var(--fg);font-weight:600;border-bottom:2px solid var(--fg)}
+.card{position:absolute;background:rgba(16,18,20,.9);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px}
+.k{font-size:12px;color:var(--muted)}
+.big{font:600 30px/1.05 var(--display);font-variant-numeric:tabular-nums}
+.gauge{position:relative;height:6px;border-radius:3px;background:linear-gradient(90deg,var(--cool),var(--neutral),var(--fire-mid));margin:8px 0 3px}
+.gauge i{position:absolute;top:-4px;width:2px;height:14px;background:var(--fg);box-shadow:0 0 0 2px var(--bg)}
+.gk{display:flex;justify-content:space-between;font-size:10px;color:var(--muted)}
+.row{display:flex;justify-content:space-between;gap:10px;border-top:1px solid var(--line);padding:5px 0;font-variant-numeric:tabular-nums}
+/* research sidebar */
+.side{position:absolute;top:44px;left:0;bottom:0;width:300px;background:var(--bg);border-right:1px solid var(--line);overflow-y:auto;transition:width .18s ease}
+.side-h{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--bg);border-bottom:1px solid var(--line)}
+.side-h b{font-size:13px}
+.side details{border-bottom:1px solid var(--line)}
+.side summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;padding:10px 12px;font-weight:600;font-size:13px}
+.side summary::-webkit-details-marker{display:none}
+.side summary::after{content:"";margin-left:auto;width:6px;height:6px;border-right:1.5px solid var(--muted);border-bottom:1.5px solid var(--muted);transform:rotate(-45deg)}
+.side details[open] > summary::after{transform:rotate(45deg) translateY(-2px)}
+.side .lt{width:18px;height:18px;display:grid;place-items:center;font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:2px;flex:none}
+.sb{padding:0 12px 12px;display:flex;flex-direction:column;gap:8px}
+.f{display:flex;flex-direction:column;gap:3px}
+.f > span{font-size:12px;color:var(--muted)}
+.inp{height:28px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface);display:flex;align-items:center;justify-content:space-between;padding:0 8px;font-size:13px}
+.inp::after{content:"";width:5px;height:5px;border-right:1.5px solid var(--muted);border-bottom:1.5px solid var(--muted);transform:rotate(45deg) translateY(-2px)}
+.inp.plain::after{display:none}
+.crumb{display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:12px}
+.crumb span{padding:2px 6px;border:1px solid var(--line);border-radius:2px}
+.crumb span.on{border-color:var(--fg)}
+.crumb em{font-style:normal;color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;color:var(--muted)} .chips b{color:var(--fg);font-weight:600;border-bottom:2px solid var(--fg)}
+.opt{display:flex;align-items:center;gap:7px;font-size:13px}
+.opt i{width:12px;height:12px;border:1px solid var(--muted);border-radius:50%;flex:none}
+.opt i.sq{border-radius:2px}
+.opt i.on{border-color:var(--fire-mid);background:radial-gradient(circle,var(--fire-mid) 45%,transparent 50%)}
+.opt i.sq.on{background:var(--fire-mid)}
+.opt.dis{opacity:.55}
+.mini-slider{position:relative;height:16px}
+.mini-slider::before{content:"";position:absolute;left:0;right:0;top:7px;height:2px;background:var(--line-2)}
+.mini-slider b{position:absolute;top:7px;height:2px;background:var(--fg)}
+.mini-slider i{position:absolute;top:2px;width:3px;height:12px;background:var(--fg);margin-left:-1px}
+.hint{font-size:12px;color:var(--muted)}
+.ana{position:absolute;top:44px;right:0;bottom:0;width:320px;background:var(--bg);border-left:1px solid var(--line);overflow-y:auto;padding:12px 14px}
+.ana h4{font:600 15px var(--display);margin:14px 0 6px}
+.ana .head{font:600 22px/1.1 var(--display)}
+.ana svg{display:block;width:100%;height:auto}
+.rail{position:absolute;top:44px;left:0;bottom:0;width:44px;background:var(--bg);border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;gap:6px;padding-top:10px}
+.rail .lt{width:28px;height:28px;display:grid;place-items:center;font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:var(--r)}
+.legend{position:absolute;display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);background:rgba(16,18,20,.82);padding:4px 8px;border-radius:var(--r)}
+.legend .ramp{width:70px;height:6px;border-radius:3px;background:linear-gradient(90deg,var(--fire-lo),var(--fire-mid),var(--fire-hi))}
+
+/* ---------- A/B/C ---------- */
+.opts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:14px}
+@media (max-width:900px){.opts{grid-template-columns:minmax(0,1fr)}}
+.oc{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);display:flex;flex-direction:column;min-width:0}
+.oc.sel{outline:2px solid var(--fg);outline-offset:-1px}
+.oc-top{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px 14px 0}
+.oc-top b{font-size:14px}
+.oc label{font-size:13px;color:var(--muted);display:flex;gap:6px;align-items:center;cursor:pointer}
+.pv{margin:10px 14px;background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:14px;min-height:130px;position:relative;font-size:13px}
+.why{padding:0 14px 14px;font-size:13px}
+.why p{margin:0 0 6px} .why .t{color:var(--muted)}
+.summary{position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:1px solid var(--line);padding:10px 16px;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;font-size:13px;z-index:10}
+.summary code{white-space:normal}
+.summary button{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:var(--r);padding:5px 10px;cursor:pointer}
+.globes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:14px}
+@media (max-width:900px){.globes{grid-template-columns:minmax(0,1fr)}}
+.gf{position:relative;aspect-ratio:4/3;background:#0c0e10;border-radius:var(--r);overflow:hidden;display:grid;place-items:center}
+.gf iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Presentation and Research modes: review</h1>
+  <p class="lead muted">Phases 1 to 3. Nothing in the app has changed except two review-only switches: <code>?embed=1</code> (the live globe without interface, used below) and <code>?globe=realistic</code>. The screens below are mock interfaces drawn over the real, live globe: the globe responds (drag, scroll, click), the panels around it are mock-ups. Pick A, B or C for each component at the bottom and send the summary line.</p>
+  <nav class="toc"><a href="#audit">1 · Audit</a><a href="#arch">2 · Architecture</a><a href="#p-pres">3 · Presentation</a><a href="#p-res">4 · Research, sidebar open</a><a href="#p-col">5 · Research, collapsed</a><a href="#globes">6 · Globes</a><a href="#abc">7 · Components A/B/C</a></nav>
+  <p class="muted" style="font-size:13px"><span class="tag ok">works</span> exists in the app today · <span class="tag re">reorganize</span> exists, moves or gets a new control · <span class="tag plan">proposed</span> not built; shown as a proposal, never as working</p>
+
+  <section class="part" id="audit">
+    <h2>1 · What the app can do today</h2>
+    <p class="lead muted">Checked against the code and the data the server reads. This decides what each mode can honestly offer.</p>
+    <div class="scroll"><table class="audit">
+      <tr><th>Area</th><th>Capability</th><th>Status</th><th>Notes</th></tr>
+      <tr><td>Geography</td><td>Whole planet, country (searchable), state or province, lat/lon box, drawn polygon</td><td><span class="tag ok">works</span></td><td>States are Natural Earth admin-1 polygons; areas are cut on the 0.05° grid (about 5 km). Flies to the area and outlines it.</td></tr>
+      <tr><td></td><td>Continent</td><td><span class="tag plan">proposed</span></td><td>No continent field in the boundary data we ship. Needs Natural Earth admin-0 with its CONTINENT attribute (public domain) and a server option to sum countries. Not faked.</td></tr>
+      <tr><td></td><td>Hierarchical selector World → country → state</td><td><span class="tag re">reorganize</span></td><td>Country search and the state list exist separately; a breadcrumb can join them. The continent level stays empty until the item above exists.</td></tr>
+      <tr><td>Time</td><td>Monthly record, Nov 2000 – Dec 2025</td><td><span class="tag ok">works</span></td><td>Every month for every cell is in the page already, so scrubbing and playing need no server calls.</td></tr>
+      <tr><td></td><td>Last 7 days, per detection with local time</td><td><span class="tag ok">works</span></td><td>From the FIRMS near-real-time NOAA-20 file.</td></tr>
+      <tr><td></td><td>Year range, presets, dual-handle slider</td><td><span class="tag re">reorganize</span></td><td>A play range (month/year from–to) and a download range exist; one shared range control replaces both.</td></tr>
+      <tr><td></td><td>Day-level dates for the archive</td><td><span class="tag plan">proposed</span></td><td>The archive is served monthly. Daily rows exist in the build but are not served; would need a new endpoint.</td></tr>
+      <tr><td>Playback</td><td>Play/pause, scrub, speed, loop, range</td><td><span class="tag ok">works</span></td><td>Each frame is one real month; nothing is interpolated.</td></tr>
+      <tr><td></td><td>Previous / next month</td><td><span class="tag re">reorganize</span></td><td>Not a button yet; trivial with the existing time setter.</td></tr>
+      <tr><td></td><td>Yearly aggregation on the globe</td><td><span class="tag plan">proposed</span></td><td>Possible in the page by adding 12 monthly grids; not built. Yearly totals per area exist (Year by year chart).</td></tr>
+      <tr><td>Sensors</td><td>Harmonized vs as-reported counts</td><td><span class="tag ok">works</span></td><td>Map, calendar and charts switch together.</td></tr>
+      <tr><td></td><td>Raw counts per satellite (Terra, Aqua, Suomi NPP, NOAA-20) for the selected area</td><td><span class="tag ok">works</span></td><td>In the monthly record and the Year by year chart.</td></tr>
+      <tr><td></td><td>MODIS-only or VIIRS-only layer on the globe</td><td><span class="tag plan">proposed</span></td><td>The globe file has harmonized, raw (all satellites summed) and night grids only. Needs a server change to split by sensor.</td></tr>
+      <tr><td></td><td>Day / night filter</td><td><span class="tag ok">works</span></td><td>Harmonized night grid for months; local time for the last 7 days.</td></tr>
+      <tr><td></td><td>FRP (fire radiative power)</td><td><span class="tag ok">works</span> monthly sums · <span class="tag plan">proposed</span> distributions</td><td>Monthly FRP sums per area and per detection FRP for the last 7 days exist. FRP histograms for the archive would need a new endpoint.</td></tr>
+      <tr><td></td><td>Confidence filter</td><td><span class="tag ok">fixed in the build</span></td><td>MODIS ≥ 30 %, VIIRS not "low". Not adjustable, and MODIS and VIIRS confidence are not presented as equivalent.</td></tr>
+      <tr><td></td><td>Uncertainty</td><td><span class="tag ok">works</span></td><td>10–90 % range on converted months, error map by 20° region, hidden-year validation tables, observed vs converted labelled by era.</td></tr>
+      <tr><td>Display</td><td>Globe looks, colour by amount / vs normal / confidence, minimum density, brightness, state borders, place names</td><td><span class="tag ok">works</span></td><td>Realistic texture returns as an option for review.</td></tr>
+      <tr><td></td><td>Alternative colour scales, labels on/off, reset</td><td><span class="tag re">reorganize</span></td><td>Presentation-only changes; safe to add.</td></tr>
+      <tr><td>Analysis</td><td>Verdict vs normal, season so far, calendar, year by year, sensor check, method and validation, record table</td><td><span class="tag ok">works</span></td><td></td></tr>
+      <tr><td></td><td>Compare two periods</td><td><span class="tag plan">proposed</span></td><td>Feasible in the page from the monthly record already loaded; not built.</td></tr>
+      <tr><td>Export</td><td>Monthly table CSV, single detections CSV, briefing image, link, API URLs</td><td><span class="tag ok">works</span></td><td></td></tr>
+    </table></div>
+  </section>
+
+  <section class="part" id="arch">
+    <h2>2 · Architecture</h2>
+    <p class="lead muted">One page, one state. The mode only decides which controls are shown. Area, time, playback position and display settings live in the same place for both, so switching never resets them (they are already kept in the address, except the playback card).</p>
+    <div class="cols">
+      <div class="wire"><svg viewBox="0 0 320 190"><rect width="320" height="190" fill="#0c0e10"/><rect width="320" height="16" fill="#16191c"/><circle cx="160" cy="88" r="56" fill="#1d2125"/><rect x="10" y="118" width="90" height="34" fill="#22262b"/><rect x="0" y="160" width="320" height="30" fill="#16191c"/><rect x="250" y="4" width="62" height="8" fill="#e6e7e8"/></svg>
+        <p><b>Presentation (default).</b> Globe fills the screen. Top bar: name, place search, mode switch. A small metrics card. Timeline full width at the bottom with play, speed, steps, date and year range.</p></div>
+      <div class="wire"><svg viewBox="0 0 320 190"><rect width="320" height="190" fill="#0c0e10"/><rect width="320" height="16" fill="#16191c"/><rect x="0" y="16" width="80" height="174" fill="#16191c"/><rect x="250" y="16" width="70" height="174" fill="#16191c"/><circle cx="165" cy="85" r="44" fill="#1d2125"/><rect x="80" y="160" width="170" height="30" fill="#1d2125"/><g fill="#2a2f35"><rect x="6" y="24" width="68" height="10"/><rect x="6" y="40" width="68" height="10"/><rect x="6" y="56" width="68" height="10"/><rect x="6" y="72" width="68" height="10"/><rect x="6" y="88" width="68" height="10"/></g></svg>
+        <p><b>Research, sidebar open.</b> Left: research sidebar, sections A to E (controls). Right: analysis panel F (results, charts, export). Timeline under the globe. Both panels fold.</p></div>
+      <div class="wire"><svg viewBox="0 0 320 190"><rect width="320" height="190" fill="#0c0e10"/><rect width="320" height="16" fill="#16191c"/><rect x="0" y="16" width="14" height="174" fill="#16191c"/><circle cx="160" cy="85" r="60" fill="#1d2125"/><rect x="14" y="160" width="306" height="30" fill="#1d2125"/><rect x="230" y="30" width="80" height="44" fill="#22262b"/></svg>
+        <p><b>Research, collapsed.</b> A thin rail of section letters stays; the globe takes the space. The analysis panel folds to a compact metrics card. On phones both panels become drawers from the bottom.</p></div>
+    </div>
+  </section>
+
+  <section class="part" id="p-pres">
+    <h2>3 · Presentation mode</h2>
+    <p class="lead muted">For judges and first visits. Figures shown are the real values for the whole planet in August 2025.</p>
+    <div class="screen" data-src="/?embed=1#a=world&t=2025-08">
+      <div class="globe-slot"><button class="btn load" type="button">Load the live globe</button></div>
+      <div class="ui">
+        <div class="nav"><span class="brand"><svg width="20" height="20" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" fill="none" stroke="#e6e7e8" stroke-width="1.6"/><ellipse cx="16" cy="16" rx="5.5" ry="12" fill="none" stroke="#e6e7e8" stroke-width="1.2"/><path d="M4 16h24" stroke="#e6e7e8" stroke-width="1.2"/><circle cx="21.5" cy="10.5" r="3.2" fill="#ff5a0a"/></svg>Fire Pulse</span>
+          <span class="srch">Search a place</span><span class="lnk">Whole planet</span><span class="lnk">Brazil</span><span class="lnk">Australia</span><span class="sp"></span>
+          <div class="modesw mswitch"><button type="button" aria-pressed="true">Presentation</button><button type="button" aria-pressed="false">Research</button></div></div>
+        <div class="card" style="left:14px;bottom:86px;width:250px"><div class="k">Earth · August 2025</div><div class="big">2,173,400</div><div class="k">fire detections</div><div class="gauge"><i style="left:47%"></i></div><div class="gk"><span>¼ of normal</span><span>normal</span><span>4×</span></div><div style="margin-top:6px;font-weight:600">8 % below a normal August</div><div class="k" style="margin-top:2px">Season so far: 91 % of normal</div></div>
+        <div class="legend" style="right:14px;bottom:86px"><span>Fewer</span><span class="ramp"></span><span>More fire</span></div>
+        <div class="dock"><div class="ctl"><button class="ibtn" type="button" title="Previous month">‹</button><button class="ibtn play" type="button" title="Play">▶</button><button class="ibtn" type="button" title="Next month">›</button></div>
+          <div class="date">August 2025</div>
+          <div class="track" data-track="2000-2025" data-sel="0-25" data-now="25"></div>
+          <div class="speed"><span>½×</span><b>1×</b><span>2×</span><span>4×</span></div></div>
+      </div>
+    </div>
+    <p class="muted" style="font-size:13px;margin-top:8px">Kept from today: search, quick places, globe, play and speed. Added: previous/next, a year range on the timeline with yearly totals behind it. Moved away: menus, filters and the report (they live in Research).</p>
+  </section>
+
+  <section class="part" id="p-res">
+    <h2>4 · Research mode, sidebar open</h2>
+    <p class="lead muted">Same globe, same timeline. Example selection: Chihuahua, Mexico, 2015–2025, August 2025. Items marked proposed are visibly disabled.</p>
+    <div class="screen research" data-src="/?embed=1#a=c%3AMexico&t=2025-08" data-left="300" data-right="320">
+      <div class="globe-slot"><button class="btn load" type="button">Load the live globe</button></div>
+      <div class="ui">
+        <div class="nav"><span class="brand"><svg width="20" height="20" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" fill="none" stroke="#e6e7e8" stroke-width="1.6"/><ellipse cx="16" cy="16" rx="5.5" ry="12" fill="none" stroke="#e6e7e8" stroke-width="1.2"/><path d="M4 16h24" stroke="#e6e7e8" stroke-width="1.2"/><circle cx="21.5" cy="10.5" r="3.2" fill="#ff5a0a"/></svg>Fire Pulse</span>
+          <span class="srch">Search a place</span><span class="sp"></span>
+          <div class="modesw mswitch"><button type="button" aria-pressed="false">Presentation</button><button type="button" aria-pressed="true">Research</button></div></div>
+        <aside class="side">
+          <div class="side-h"><b>Research tools</b><button class="ibtn" type="button" title="Fold the sidebar">«</button></div>
+          <details open><summary><span class="lt">A</span>Geography</summary><div class="sb">
+            <div class="crumb"><span>World</span><em>›</em><span class="dis" style="opacity:.5">Continent</span><em>›</em><span>Mexico</span><em>›</em><span class="on">Chihuahua</span></div>
+            <div class="inp">State or province: Chihuahua</div>
+            <div class="chips"><span>Draw box</span><span>Draw shape</span><span>Type coordinates</span><span>Reset to planet</span></div>
+            <p class="hint"><span class="tag plan">proposed</span> Continent level needs continent boundaries (see audit).</p></div></details>
+          <details open><summary><span class="lt">B</span>Time</summary><div class="sb">
+            <div class="chips"><span>All 2000–2025</span><span>Last 5 years</span><b>Last 10 years</b><span>Custom</span></div>
+            <div class="mini-slider"><b style="left:60%;right:0"></b><i style="left:60%"></i><i style="left:100%"></i></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px"><div class="f"><span>From</span><div class="inp">Jan 2015</div></div><div class="f"><span>To</span><div class="inp">Dec 2025</div></div></div>
+            <p class="hint">Monthly resolution. <span class="tag plan">proposed</span> day-level dates.</p></div></details>
+          <details><summary><span class="lt">C</span>Playback</summary><div class="sb">
+            <div class="chips"><span>½×</span><b>1×</b><span>2×</span><span>4×</span></div>
+            <div class="opt"><i class="sq"></i>Loop the range</div>
+            <div class="opt"><i class="on"></i>Step: month</div><div class="opt dis"><i></i>Step: year <span class="tag plan">proposed</span></div></div></details>
+          <details open><summary><span class="lt">D</span>Satellites and harmonization</summary><div class="sb">
+            <div class="opt"><i class="on"></i>Harmonized (VIIRS units)</div><div class="opt"><i></i>As each satellite reported</div>
+            <div class="opt"><i class="on"></i>All fires</div><div class="opt"><i></i>Day (≈13:30)</div><div class="opt"><i></i>Night (≈01:30)</div>
+            <div class="opt dis"><i class="sq"></i>MODIS-only / VIIRS-only layer <span class="tag plan">proposed</span></div>
+            <p class="hint">Before Feb 2012: Aqua/Terra converted (estimate, with range). After: VIIRS measured.</p></div></details>
+          <details><summary><span class="lt">E</span>Display</summary><div class="sb">
+            <div class="chips"><b>Standard</b><span>Minimal</span><span>Realistic</span></div>
+            <div class="chips"><b>Amount</b><span>Vs normal</span><span>Confidence</span></div>
+            <div class="f"><span>Show squares with at least</span><div class="inp">1 detection</div></div>
+            <div class="opt"><i class="sq on"></i>State borders</div><div class="opt"><i class="sq on"></i>Place names</div>
+            <span class="btn" style="align-self:flex-start">Reset display</span></div></details>
+        </aside>
+        <aside class="ana">
+          <div class="k">State or province, Mexico</div><div class="head">Chihuahua</div><div class="k">August 2025</div>
+          <h4>Verdict</h4><div class="gauge"><i style="left:58%"></i></div><div class="gk"><span>¼×</span><span>normal</span><span>4×</span></div>
+          <div class="row"><span class="k">This month</span><span>—</span></div><div class="row"><span class="k">Normal month</span><span>—</span></div><div class="row"><span class="k">Source</span><span>VIIRS, measured</span></div>
+          <h4>Year by year</h4><svg viewBox="0 0 280 70">${'{bars}'}</svg>
+          <h4>Compare periods <span class="tag plan">proposed</span></h4><p class="hint">2015–2019 against 2020–2025, same months.</p>
+          <h4>Export</h4><div class="chips"><span>Table CSV</span><span>Detections CSV</span><span>Briefing</span><span>API link</span></div>
+          <p class="hint" style="margin-top:10px">Values here are placeholders in the mock; the live panel shows the real figures.</p>
+        </aside>
+        <div class="dock" style="left:300px;right:320px"><div class="ctl"><button class="ibtn" type="button">‹</button><button class="ibtn play" type="button">▶</button><button class="ibtn" type="button">›</button></div>
+          <div class="date">Aug 2025</div><div class="track" data-track="2000-2025" data-sel="15-25" data-now="25"></div><div class="speed"><b>1×</b></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="part" id="p-col">
+    <h2>5 · Research mode, collapsed</h2>
+    <p class="lead muted">The sidebar folds to a rail of section letters (each opens its section); the analysis panel folds to a compact card. Selections stay.</p>
+    <div class="screen" data-src="/?embed=1#a=c%3AMexico&t=2025-08" data-left="44">
+      <div class="globe-slot"><button class="btn load" type="button">Load the live globe</button></div>
+      <div class="ui">
+        <div class="nav"><span class="brand"><svg width="20" height="20" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" fill="none" stroke="#e6e7e8" stroke-width="1.6"/><ellipse cx="16" cy="16" rx="5.5" ry="12" fill="none" stroke="#e6e7e8" stroke-width="1.2"/><path d="M4 16h24" stroke="#e6e7e8" stroke-width="1.2"/><circle cx="21.5" cy="10.5" r="3.2" fill="#ff5a0a"/></svg>Fire Pulse</span>
+          <span class="srch">Search a place</span><span class="sp"></span>
+          <div class="modesw mswitch"><button type="button" aria-pressed="false">Presentation</button><button type="button" aria-pressed="true">Research</button></div></div>
+        <div class="rail"><button class="ibtn" type="button" title="Open the sidebar">»</button><span class="lt">A</span><span class="lt">B</span><span class="lt">C</span><span class="lt">D</span><span class="lt">E</span></div>
+        <div class="card" style="right:14px;top:58px;width:220px"><div class="k">Chihuahua · Aug 2025</div><div class="gauge"><i style="left:58%"></i></div><div class="gk"><span>¼×</span><span>normal</span><span>4×</span></div><div class="row" style="margin-top:6px"><span class="k">Range</span><span>2015–2025</span></div><div class="row"><span class="k">Counts</span><span>Harmonized</span></div><span class="btn" style="margin-top:6px;display:inline-block">Open analysis</span></div>
+        <div class="dock" style="left:44px"><div class="ctl"><button class="ibtn" type="button">‹</button><button class="ibtn play" type="button">▶</button><button class="ibtn" type="button">›</button></div>
+          <div class="date">August 2025</div><div class="track" data-track="2000-2025" data-sel="15-25" data-now="25"></div><div class="speed"><span>½×</span><b>1×</b><span>2×</span><span>4×</span></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="part" id="globes">
+    <h2>6 · Globes</h2>
+    <p class="lead muted">All three are the real app with the same data, rotation, zoom, timeline and hover. You chose Standard and Minimal earlier; Realistic is back only so you can compare it again.</p>
+    <div class="globes">
+      <div><h3>A · Standard (current)</h3><div class="gf" data-src="/?embed=1&globe=standard#a=world&t=2025-08"><button class="btn" type="button">Load</button></div><p class="muted" style="font-size:13px;margin-top:6px">Navy ocean, flat land, thin atmosphere. Your current default.</p></div>
+      <div><h3>A′ · Realistic</h3><div class="gf" data-src="/?embed=1&globe=realistic#a=world&t=2025-08"><button class="btn" type="button">Load</button></div><p class="muted" style="font-size:13px;margin-top:6px">Natural Earth II relief and land cover (public domain), soft light. Heavier to draw; fire competes with tan land in dense areas.</p></div>
+      <div><h3>B · Minimal scientific</h3><div class="gf" data-src="/?embed=1&globe=minimal#a=world&t=2025-08"><button class="btn" type="button">Load</button></div><p class="muted" style="font-size:13px;margin-top:6px">Graphite sphere, hairline borders, no glow; fire has the most contrast.</p></div>
+    </div>
+  </section>
+
+  <section class="part" id="abc">
+    <h2>7 · New components: three alternatives each</h2>
+    <p class="lead muted">All follow the look you approved (graphite, fire as the only colour, Source Serif and Sans, hairlines). Click to pick.</p>
+    <div id="cats"></div>
+  </section>
+</div>
+
+<div class="summary"><b>Your picks:</b> <code id="sumLine">none yet</code> <button type="button" id="copy">Copy</button> <button type="button" id="reset">Clear</button> <span id="copied" class="muted"></span></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const YT = [11.2,11.6,13.4,19.5,17.9,17.5,16.8,17.7,17.8,16.1,17.4,17.5,18.3,15.7,16.4,17.7,15.2,15.8,15.4,17.2,16.8,15.9,14.2,16.6,15.3,14.8];   // illustrative bar heights for the mock timeline
+function track(el){
+  const [a, b] = el.dataset.track.split('-').map(Number), n = b - a + 1, [s0, s1] = el.dataset.sel.split('-').map(Number), now = +el.dataset.now, mx = Math.max(...YT);
+  el.innerHTML = `<div class="bars">${YT.slice(0, n).map((v, i) => `<i class="${i === now ? 'now' : i >= s0 && i <= s1 ? 'in' : ''}" style="height:${(v/mx*100).toFixed(0)}%"></i>`).join('')}</div>
+    <div class="trk"></div><div class="sel" style="left:${s0/(n-1)*100}%;right:${100 - s1/(n-1)*100}%"></div>
+    <div class="hd" style="left:${s0/(n-1)*100}%"></div><div class="hd" style="left:${s1/(n-1)*100}%"></div><div class="cur" style="left:${(now + .5)/n*100}%"></div>
+    <div class="yrs"><span>${a}</span><span>2012 · VIIRS starts</span><span>${b}</span></div>`;
+}
+document.querySelectorAll('.track').forEach(track);
+document.querySelectorAll('svg').forEach(s => { if(s.innerHTML.includes('{bars}')) s.innerHTML = YT.map((v, i) => `<rect x="${i*10.8}" y="${70 - v*3.2}" width="8" height="${v*3.2}" fill="${i < 12 ? '#6a9fd0' : '#ff5a0a'}" opacity="${i < 12 ? .7 : .85}"/>`).join(''); });
+
+// live globes: one at a time, so the page never holds several copies of the data
+function loadInto(box, src, insetLeft = 0, insetRight = 0){
+  document.querySelectorAll('iframe.live').forEach(f => { const p = f.parentElement; f.remove(); const b = p.querySelector('button'); if(b) b.hidden = false; });
+  const f = document.createElement('iframe'); f.className = 'live'; f.src = src; f.title = 'Live globe'; f.style.left = insetLeft + 'px'; f.style.width = `calc(100% - ${insetLeft + insetRight}px)`;
+  box.appendChild(f); const b = box.querySelector('button'); if(b) b.hidden = true;
+}
+document.querySelectorAll('.screen').forEach(sc => sc.querySelector('.globe-slot button').onclick = () =>
+  loadInto(sc.querySelector('.globe-slot'), sc.dataset.src, +(sc.dataset.left || 0), +(sc.dataset.right || 0)));
+document.querySelectorAll('.gf').forEach(g => g.querySelector('button').onclick = () => loadInto(g, g.dataset.src));
+// the mode switches in the mocks jump between the mock screens
+document.querySelectorAll('.mswitch').forEach(m => m.addEventListener('click', e => { const b = e.target.closest('button'); if(!b) return;
+  $(b.textContent === 'Research' ? 'p-res' : 'p-pres').scrollIntoView({behavior:'smooth'}); }));
+document.querySelectorAll('.side-h .ibtn').forEach(b => b.onclick = () => $('p-col').scrollIntoView({behavior:'smooth'}));
+document.querySelectorAll('.rail .ibtn').forEach(b => b.onclick = () => $('p-res').scrollIntoView({behavior:'smooth'}));
+
+const bars = (h, s0, s1, now) => YT.map((v, i) => `<i class="${i === now ? 'now' : i >= s0 && i <= s1 ? 'in' : ''}" style="height:${(v/Math.max(...YT)*h).toFixed(0)}px"></i>`).join('');
+const CATS = [
+ {id:'switch', name:'Mode switch',
+  A:['Segmented text in the bar', `<div style="display:flex;justify-content:flex-end"><div class="modesw"><button aria-pressed="true">Presentation</button><button aria-pressed="false">Research</button></div></div><p class="hint" style="margin-top:14px">Always visible top right; both words readable at once.</p>`,
+     'States both modes plainly; one click either way.', 'Takes about 190 px of the bar.'],
+  B:['Labelled toggle', `<div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;font-size:13px"><span class="muted">Research tools</span><span style="width:34px;height:18px;border-radius:9px;background:var(--line-2);position:relative"><i style="position:absolute;left:2px;top:2px;width:14px;height:14px;border-radius:50%;background:var(--fg)"></i></span></div><p class="hint" style="margin-top:14px">Off = Presentation. On = Research.</p>`,
+     'Frames Research as "more tools on", which matches progressive disclosure.', 'The word Presentation disappears; judges may not see that there are two modes.'],
+  C:['Tabs under the brand', `<div style="display:flex;gap:18px;font-size:14px;border-bottom:1px solid var(--line)"><span style="border-bottom:2px solid var(--fg);padding-bottom:6px">Explore</span><span class="muted" style="padding-bottom:6px">Research</span></div><p class="hint" style="margin-top:14px">Reads like two sections of one product.</p>`,
+     'Strongest sense of two experiences in one product.', 'Tabs suggest separate pages; needs care so state is clearly shared.']},
+ {id:'timeline', name:'Timeline with year range',
+  A:['Ruler with range brackets', `<div style="display:flex;align-items:center;gap:10px"><span class="ibtn play" style="display:grid">▶</span><b style="font:600 18px var(--display)">Aug 2025</b></div><svg viewBox="0 0 300 34" style="margin-top:10px">${Array.from({length:26},(_,i)=>`<line x1="${4+i*11.6}" x2="${4+i*11.6}" y1="${i%5===0?4:12}" y2="20" stroke="#8e959d" stroke-width="${i%5===0?1.2:.6}"/>`).join('')}<path d="M178 2v24M294 2v24" stroke="#e6e7e8" stroke-width="2"/><rect x="178" y="24" width="116" height="2" fill="#e6e7e8"/><line x1="294" x2="294" y1="0" y2="30" stroke="#ffc93c" stroke-width="2"/></svg>`,
+     'Precise and instrument-like; the range is two brackets on the same ruler.', 'Says nothing about how much burned each year.'],
+  B:['Yearly bars behind a dual slider', `<div style="display:flex;align-items:center;gap:10px"><span class="ibtn play" style="display:grid">▶</span><b style="font:600 18px var(--display)">Aug 2025</b></div><div class="track" style="margin-top:8px" data-track="2000-2025" data-sel="15-25" data-now="25"></div>`,
+     'You see big fire years before dragging to them; range and current month on one control. Used in the mock screens above.', 'Bars show the selected area\'s yearly totals (data already loaded), so they change with the area.'],
+  C:['Year chips and month row', `<div style="display:flex;gap:4px;font-size:11px;flex-wrap:wrap">${['2018','2019','2020','2021','2022','2023','2024','2025'].map(y=>`<span style="padding:2px 5px;border:1px solid var(--line);border-radius:2px;${y==='2025'?'background:var(--fg);color:var(--bg)':''}">${y}</span>`).join('')}</div><div style="display:flex;gap:3px;font-size:11px;margin-top:8px">${'JFMAMJJASOND'.split('').map((m,i)=>`<span style="width:18px;text-align:center;${i===7?'border-bottom:2px solid var(--fire-mid)':''}">${m}</span>`).join('')}</div>`,
+     'Direct jumps, easy on touch screens.', 'Loses the feeling of scrubbing through 25 years; range needs a separate control.']},
+ {id:'metrics', name:'Presentation metrics',
+  A:['Small ledger card', `<div class="k">Earth · August 2025</div><div class="row"><span class="k">Detections</span><span>2,173,400</span></div><div class="row"><span class="k">Vs normal</span><span>−8 %</span></div><div class="row"><span class="k">Season so far</span><span>91 %</span></div>`,
+     'Compact, numbers aligned; works over any globe.', 'Less immediate for a non-technical audience.'],
+  B:['One figure, one sentence, one gauge', `<div class="k">Earth · August 2025</div><div class="big">2,173,400</div><div class="gauge"><i style="left:47%"></i></div><div style="font-weight:600;margin-top:4px">8 % below a normal August</div>`,
+     'Understood in two seconds; same gauge as the map colour scale. Used in the Presentation mock.', 'Shows less at once; the rest is in Research.'],
+  C:['Stats along the timeline', `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;border-top:1px solid var(--line);padding-top:8px"><div><div class="k">Detections</div><b>2.17 M</b></div><div><div class="k">Vs normal</div><b>−8 %</b></div><div><div class="k">Season</div><b>91 %</b></div></div>`,
+     'Nothing floats over the globe at all.', 'Numbers sit far from the eye-line of the globe; the dock gets taller.']},
+ {id:'sidebar', name:'Research sidebar structure',
+  A:['Accordion, one column', `<div style="border:1px solid var(--line)">${['A Geography','B Time','C Playback','D Satellites','E Display'].map((s,i)=>`<div style="padding:6px 8px;border-top:${i?'1px solid var(--line)':'0'};display:flex;justify-content:space-between"><span>${s}</span><span class="muted">${i<2?'−':'+'}</span></div>`).join('')}</div>`,
+     'Everything in one scrollable column; several sections open at once. Used in the mock.', 'Long when many sections are open.'],
+  B:['Rail of icons and one panel', `<div style="display:flex;border:1px solid var(--line);height:110px"><div style="width:34px;border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;gap:6px;padding-top:6px">${'ABCDE'.split('').map((l,i)=>`<span style="width:22px;height:22px;display:grid;place-items:center;font-size:11px;border:1px solid ${i===1?'var(--fg)':'var(--line)'};border-radius:2px">${l}</span>`).join('')}</div><div style="padding:8px;flex:1"><b>Time</b><p class="hint">One section at a time.</p></div></div>`,
+     'Familiar from professional tools; the rail doubles as the collapsed state.', 'One section at a time; comparing settings across sections needs switching.'],
+  C:['Controls left, results right', `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;height:110px"><div style="border:1px solid var(--line);padding:6px"><b>Controls</b><p class="hint">A–E</p></div><div style="border:1px solid var(--line);padding:6px"><b>Analysis</b><p class="hint">F: charts, export</p></div></div>`,
+     'Inputs and outputs never mix; both fold independently. Combined with A in the mock.', 'Two panels at once leave less globe on laptops (about 60 % of the width at 1440 px).']},
+ {id:'geo', name:'Geographic selector',
+  A:['Breadcrumb with a list per level', `<div class="crumb"><span>World</span><em>›</em><span style="opacity:.5">Continent</span><em>›</em><span>Mexico</span><em>›</em><span class="on">Chihuahua</span></div><div class="inp" style="margin-top:8px">Chihuahua</div>`,
+     'Shows where you are in the hierarchy and lets you step back one level.', 'More clicks to go deep without typing.'],
+  B:['One search, results by level', `<div class="inp plain">chih|</div><div style="border:1px solid var(--line);border-top:0;font-size:12px"><div style="padding:5px 8px">Chihuahua <span class="muted">· State, Mexico</span></div><div style="padding:5px 8px;border-top:1px solid var(--line)">Chihuahua (box) <span class="muted">· Quick area</span></div></div>`,
+     'Fastest for experts who know the name; covers countries and states in one box.', 'Needs a combined list of countries and states (both already loaded).'],
+  C:['Expandable tree', `<div style="font-size:12px;line-height:1.8"><div>▾ World</div><div style="padding-left:12px">▾ Mexico</div><div style="padding-left:24px;border-left:2px solid var(--fg);margin-left:12px;padding-left:10px">Chihuahua</div><div style="padding-left:24px" class="muted">Coahuila</div><div style="padding-left:12px" class="muted">▸ Brazil</div></div>`,
+     'Browsable without knowing names.', 'Long lists (about 250 countries, 4,500 states) need search anyway.']},
+];
+const store = (() => { try { const k = 'fp-modes-picks'; return {get:() => JSON.parse(localStorage.getItem(k) || '{}'), set:v => localStorage.setItem(k, JSON.stringify(v))}; } catch(e){ return {get:() => ({}), set:() => {}}; } })();
+let picks = {}; try { picks = store.get(); } catch(e){}
+$('cats').innerHTML = CATS.map(c => `<div style="margin-top:28px"><h3>${c.name}</h3><div class="opts">${['A','B','C'].map(L => { const [t, pv, why, cost] = c[L]; return `
+  <div class="oc" data-cat="${c.id}" data-v="${L}"><div class="oc-top"><b>${L} · ${t}</b><label><input type="radio" name="${c.id}" value="${L}"> pick</label></div>
+  <div class="pv">${pv}</div><div class="why"><p>${why}</p><p class="t">Trade-off: ${cost}</p></div></div>`; }).join('')}</div></div>`).join('');
+document.querySelectorAll('#cats .track').forEach(track);
+const extra = ['globe'];
+function sync(){
+  document.querySelectorAll('.oc').forEach(o => { const on = picks[o.dataset.cat] === o.dataset.v; o.classList.toggle('sel', on); o.querySelector('input').checked = on; });
+  const parts = CATS.map(c => c.id).filter(k => picks[k]).map(k => `${k}=${picks[k]}`);
+  $('sumLine').textContent = parts.length ? parts.join(', ') : 'none yet'; try { store.set(picks); } catch(e){}
+}
+document.addEventListener('change', e => { if(e.target.matches('.oc input')){ picks[e.target.name] = e.target.value; sync(); } });
+$('reset').onclick = () => { picks = {}; sync(); };
+$('copy').onclick = () => { const t = 'Mode picks: ' + $('sumLine').textContent; (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => { $('copied').textContent = 'Copied'; }, () => { $('copied').textContent = 'Select the line and copy it'; }); };
+sync();
+</script>
+</body>
+</html>

@@ -21,6 +21,12 @@ first use. Run the tests with `.venv/Scripts/python -m pytest -q`.
 
 Add `?perf=1` to the address to see frame times on the map.
 
+The page has two modes, switched with "Research tools" in the top bar. Presentation (default) shows
+the globe, one figure with a gauge against normal, and the time bar. Research adds the tools
+sidebar (area, time range, playback, counts, display) and the analysis panel (verdict, record
+table, charts, method and validation, downloads). `?mode=research` opens Research directly and
+`?embed=1` shows the globe alone.
+
 ## The problem
 
 MODIS (1 km pixels, since 2000) and VIIRS (375 m pixels, since 2012) both detect fires, but VIIRS
@@ -165,10 +171,11 @@ were. This needs the hotspot archive (`<data>/hotspots`).
   error per square of 1 degree, for the confidence map), `/api/hotspots.csv`,
   `/api/globe.bin` (the 50 km grid for the whole globe).
 - `tiles.py` - builds the map tiles (binary layout in its first lines).
-- `static/` - the page: `index.html`, `style.css`, `app.js`, `vendor/` (D3, topojson-client,
+- `static/` - the page: `index.html`, `style.css`, `app.js`, `toolbar.js` (modes and folding panels), `design/` (review galleries), `textures/`, `vendor/` (D3, topojson-client,
   country shapes). A canvas globe that turns into a flat map when you zoom in.
 - `test_harmonize.py`, `test_api.py` - a synthetic record with a known answer, invariants of the
   build, and the API on the Mexico data.
+- `ASSETS.md` - every third-party asset (fonts, Earth texture) and its licence.
 - `SLIDES.md` - draft of the 7 slides. `screenshots/` - pictures for them (older layout).
 
 ## Limits

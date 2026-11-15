@@ -18,10 +18,21 @@ const api = (path, opts) => fetch(path, opts).then(r => r.ok ? r.json() : r.json
   const x = new Error(typeof e.detail === 'string' ? e.detail : r.statusText || String(r.status)); x.status = r.status; throw x; }));
 
 /* ---------- load ---------- */
+async function fetchWithProgress(url, onProgress){   // the globe file is the one big download: say how far it is
+  const r = await fetch(url); if(!r.ok) throw new Error(r.status);
+  const total = +r.headers.get('content-length') || 0;
+  if(!r.body || !total || r.headers.get('content-encoding')) return r.arrayBuffer();
+  const rd = r.body.getReader(), parts = []; let n = 0;
+  for(;;){ const {done, value} = await rd.read(); if(done) break; parts.push(value); n += value.length; onProgress(n, total); }
+  const out = new Uint8Array(n); let o = 0; for(const p of parts){ out.set(p, o); o += p.length; }
+  return out.buffer;
+}
 let G, meta, VAL, cellId, ctry, GR, Hm, Rw, Nt = null, topo110;
 try {
   const [bin, t110, m, v] = await Promise.all([
-    fetch('api/globe.bin').then(r => { if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); }),
+    fetchWithProgress('api/globe.bin', (n, total) => {
+      $('loadText').textContent = `Loading 25 years of fire detections · ${(n/1e6).toFixed(1)} of ${(total/1e6).toFixed(1)} MB`;
+      $('loadBar').style.width = (100*Math.min(1, n/total)).toFixed(1) + '%'; }),
     fetch('vendor/countries-110m.json').then(r => r.json()), api('api/meta'), api('api/validation')]);
   let bytes = new Uint8Array(bin);
   if(bytes[0] === 0x1f && bytes[1] === 0x8b)   // gunzip unless the server already did
@@ -62,18 +73,13 @@ const UNIT = {
     help:`Measured since ${monthName(VSTART)}. Earlier months are estimated from older satellites.`,
     sentence:`Counts: all fires the newer satellites see, measured since ${monthName(VSTART)}; earlier months are estimated from older satellites.`,
     now:t => t < VSTART ? 'Older satellites (estimated)' : 'Newer satellites (measured)',
-    mark:[yearOf(VSTART), 'the newer satellites start. Earlier months are estimated from older satellites'],
-    eras:[['e0', VSTART, `Before ${monthName(VSTART)} the newer satellites did not fly yet. These months are estimated from the older satellites.`, 'Older satellites (estimated)'],
-          ['e2', T - VSTART, 'Counted by the newer satellites, as measured.', 'Newer satellites (measured)']]},
+    mark:[yearOf(VSTART), 'the newer satellites start. Earlier months are estimated from older satellites']},
   aqua:{word:'detections, strict count', label:'Strict long record', grid:{h:GR.harm, n:GR.night || null},
     base:(meta.baseline && meta.baseline.aqua) || VAL.baseline, est:t => t < AQUA || t >= MODEL,
     help:`Fewer small fires. Measured ${monthName(AQUA)} to ${monthName(MODEL - 1)}; other months are estimated.`,
     sentence:`Counts: the strict long record, what the reference satellite would have seen, measured ${monthName(AQUA)} to ${monthName(MODEL - 1)}; other months are estimated.`,
     now:t => t < AQUA ? 'Older satellite (less certain)' : t < MODEL ? 'Reference satellite' : 'Newer satellite (adjusted)',
-    mark:[yearOf(MODEL), 'the newer satellites take over, adjusted so all years compare'],
-    eras:[['e0', AQUA, 'Before August 2002 only an older satellite flew. Its counts are scaled to the reference satellite. Less certain.', 'Older satellite (less certain)'],
-          ['e1', MODEL - AQUA, 'The reference satellite, as measured. Every other year is adjusted to it.', 'Reference satellite'],
-          ['e2', T - MODEL, 'From 2022 the newer satellites carry the record. Their detections are adjusted to what the reference satellite would have seen.', 'Newer satellite (adjusted)']]}};
+    mark:[yearOf(MODEL), 'the newer satellites take over, adjusted so all years compare']}};
 let UNITS = (meta.units || ['aqua']).filter(u => UNIT[u] && UNIT[u].grid && UNIT[u].base && (u === 'aqua' || VAL.viirs));
 if(!UNITS.length) UNITS = ['aqua'];
 const dShort = d => { const x = new Date(d + 'T00:00:00Z'); return isNaN(x) ? String(d) : `${x.getUTCDate()} ${MON[x.getUTCMonth()]}`; };
@@ -155,6 +161,9 @@ const PTC = [lut(seqLUT, .4), lut(seqLUT, .72), C['fire-hi']];     // weak, medi
 // brightness scale for the globe, per unit (VIIRS counts are about 6 times larger): the 99.5th percentile of non-empty cell-months
 const vmaxOf = a => { const s = []; for(let i=0;i<a.length;i+=53) if(a[i]) s.push(a[i]); s.sort((a,b) => a-b); return s[Math.floor(s.length*.995)] || 100; };
 let VMAX = 100;
+let minDens = 1, fireGain = 1;
+const disp = {states:true, places:true};   // viewer settings: hide sparse squares, scale the fire brightness (drawing only)
+const DENS = [1, 5, 20, 50, 200, 1000];
 
 /* ---------- state ---------- */
 const state = {t:T-1, harm:true, unit:UNITS[0], view:'count', cal:'grid', live:false, time:'all', strong:false, pick:false, sel:{kind:'world', name:'Earth', id:0}};
@@ -202,7 +211,7 @@ blend.invert = (x, y) => {   // y depends on latitude only, so two 1-D Newton so
 const projection = d3.geoProjection(blend).clipAngle(90).precision(0.6).rotate([100, -20]);
 const path = d3.geoPath(projection, ctx), bpath = d3.geoPath(projection, bctx);
 const graticule = d3.geoGraticule10();
-let W = 0, H = 0, dpr = 1, S0 = 100, zoom = 1, dirty = true, spin = !reduced, fly = null, dragging = null, drawMode = null, drawRect = null, poly = [];
+let W = 0, H = 0, dpr = 1, S0 = 100, zoom = 1, dirty = true, spin = false, fly = null, dragging = null, drawMode = null, drawRect = null, poly = [];
 let lastWheel = -1e9, lastMove = -1e9, wasMoving = false, pinch = null, noClick = false, baseVer = 0, baseSig = '', baseView = null, baseMode = '', fireLevel = 0;
 const pointers = new Map();
 const stars = d3.range(170).map(() => [Math.random(), Math.random(), 0.4 + Math.random()*1.1, 0.25 + Math.random()*0.6]);
@@ -218,7 +227,18 @@ const rowStart = (() => {
 })();
 let qX = new Float32Array(0), qY = new Float32Array(0), qI = new Int32Array(0), nQ = 0, qSide = 0, l1Shown = null;   // level 1 on screen, for hover
 const NB = 12;
-function setZoom(z){ zoom = z; const u = clamp((z - 1.5)/1.1, 0, 1); alpha = u*u*(3 - 2*u); projection.scale(S0*zoom); }
+// flat map switch: the same projection held fully flat (alpha = 1, the whole world in view at the smallest zoom, north up)
+let flatMap = false;
+const flatFit = () => Math.min(W/(2*Math.PI), H/Math.PI)*0.98/S0;
+const flatOut = () => flatMap && zoom <= flatFit()*1.02;   // fully zoomed out: keep the equator level
+function setZoom(z){
+  if(flatMap){
+    zoom = Math.max(z, flatFit()); alpha = 1; projection.scale(S0*zoom);
+    if(flatOut()){ const r = projection.rotate(); if(r[1]) projection.rotate([r[0], 0]); }
+    return;
+  }
+  zoom = z; const u = clamp((z - 1.5)/1.1, 0, 1); alpha = u*u*(3 - 2*u); projection.scale(S0*zoom);
+}
 const bump = () => { baseVer++; dirty = true; };   // something on the base map changed
 
 function resize(){
@@ -249,7 +269,7 @@ function frameRot(){
 }
 const PX = [0, 0];
 function projU(x, y, z, m){   // unit vector -> PX; false on the far side or more than m px off screen
-  const P = PC, cosc = x*P.cX + y*P.cY + z*P.cZ; if(cosc < 0.04) return false;
+  const P = PC, cosc = x*P.cX + y*P.cY + z*P.cZ; if(cosc < 0.04 && !flatMap) return false;
   let xr = x*P.eX + y*P.eY, yr = x*P.nX + y*P.nY + z*P.nZ;
   if(alpha > 0){ xr = (1 - alpha)*xr + alpha*Math.atan2(xr, cosc); yr = (1 - alpha)*yr + alpha*Math.asin(yr > 1 ? 1 : yr < -1 ? -1 : yr); }
   const X = P.cx + P.k*xr, Y = P.cy - P.k*yr;
@@ -285,8 +305,8 @@ let TR = null, TRS = null, trustOff = !HAS.trust;   // TRS: the map per unit, TR
 const kmOf = deg => Number((deg*111).toPrecision(1));   // 1 degree is about 100 km
 function trustFail(){
   trustOff = true;
-  const r = document.querySelector('input[name=view][value=trust]'); r.disabled = true;
-  r.parentElement.title = 'Not available: the server has no confidence map yet. Rebuilding the data adds it.';
+  const b = document.querySelector('.vbox[data-view=trust]'); b.disabled = document.querySelector('input[name=view][value=trust]').disabled = true;
+  b.title = 'Not available: the server has no confidence map yet. Rebuilding the data adds it.';
   if(state.view === 'trust') setView('count');
 }
 function loadTrust(){
@@ -335,47 +355,139 @@ const hatchC = Object.assign(document.createElement('canvas'), {width:6, height:
 { const h = hatchC.getContext('2d'); h.strokeStyle = NOTEST; h.lineWidth = 1.5; h.beginPath();
   for(const o of [-6, 0, 6]){ h.moveTo(o, 6); h.lineTo(o + 6, 0); } h.stroke(); }   // "/" lines that tile without seams
 
+
+/* ---------- globe look: Standard (the original drawing) or Minimal (neutral, for reading fire). Presentation only:
+   the fire layer, data and interaction are the same. Chosen with the switch on the map, kept per browser. ---------- */
+const LOOK = {
+  standard:{space:'#060a13', ocean:'#0a1428', land:'#1b2742', border:'#33436a', borderW:.6, graticule:.35, line:'#263350', stars:1,
+            atmo:'rgba(120,180,255,.38)', atmoOut:1.16, shade:true, glow:true},
+  minimal:{space:'#0c0e10', ocean:'#16191c', land:'#262a30', border:'#3b4049', borderW:.5, graticule:.22, line:'#2c3138', stars:0,
+           atmo:null, limb:'#3b4049', shade:false, glow:false},
+  // Natural Earth II relief and land cover (public domain); heavier to draw than the other two
+  realistic:{space:'#05070b', ocean:'#0d2238', land:null, border:'rgba(255,255,255,.28)', borderW:.5, graticule:0, line:'#263350', stars:.6,
+             atmo:'rgba(150,195,255,.30)', atmoOut:1.08, shade:false, glow:true, texture:true},
+};
+const TEX = {data:null, w:0, h:0, state:'idle'};
+const texC = document.createElement('canvas'), texG = texC.getContext('2d');
+let texBuf = null;
+function loadTexture(){
+  if(TEX.state !== 'idle') return; TEX.state = 'loading';
+  const im = new Image();
+  im.onload = () => {
+    const c = document.createElement('canvas'); c.width = im.width; c.height = im.height;
+    const g = c.getContext('2d', {willReadFrequently:true}); g.drawImage(im, 0, 0);
+    TEX.data = g.getImageData(0, 0, im.width, im.height).data; TEX.w = im.width; TEX.h = im.height; TEX.state = 'ready'; bump();
+  };
+  im.onerror = () => { TEX.state = 'failed'; };
+  im.src = 'textures/earth-ne2-4096.jpg';
+}
+// every pixel of the sphere is turned back into a longitude and latitude and looked up in the texture,
+// lit from the upper left; the light fades and the texture darkens as the map flattens, so fires keep contrast
+const LIGHT = (() => { const v = [-0.5, 0.55, 0.67], n = Math.hypot(...v); return v.map(x => x/n); })();
+function drawTexture(g, moving){
+  if(TEX.state !== 'ready'){ loadTexture(); return false; }
+  const budget = moving ? 120000 : 700000, q = Math.min(dpr, Math.sqrt(budget/(W*H)));
+  const w = Math.max(1, Math.round(W*q)), h = Math.max(1, Math.round(H*q));
+  if(texC.width !== w || texC.height !== h){ texC.width = w; texC.height = h; texBuf = null; }
+  if(!texBuf) texBuf = texG.createImageData(w, h);
+  const out = texBuf.data, src = TEX.data, tw = TEX.w, th = TEX.h, P = PC, a = alpha, lit = 1 - a, ymax = (1 - a) + a*Math.PI/2;
+  out.fill(0);
+  for(let j=0;j<h;j++){
+    const yr = (P.cy - (j + .5)/q)/P.k;
+    let sp = 0, cp = 1;
+    if(a > 1e-3){
+      if(Math.abs(yr) >= ymax) continue;
+      let p = yr; for(let i=0;i<8;i++) p -= ((1 - a)*Math.sin(p) + a*p - yr)/((1 - a)*Math.cos(p) + a || 1e-9);
+      if(!(Math.abs(p) <= Math.PI/2)) continue;
+      sp = Math.sin(p); cp = Math.cos(p);
+    } else if(Math.abs(yr) >= 1) continue;
+    for(let i=0;i<w;i++){
+      const xr = ((i + .5)/q - P.cx)/P.k;
+      let X, Y, Z;
+      if(a <= 1e-3){ const r2 = xr*xr + yr*yr; if(r2 >= 1) continue; X = xr; Y = yr; Z = Math.sqrt(1 - r2); }
+      else {
+        let l = xr; for(let it=0;it<6;it++) l -= ((1 - a)*cp*Math.sin(l) + a*l - xr)/((1 - a)*cp*Math.cos(l) + a || 1e-9);
+        if(!(Math.abs(l) <= (flatMap ? Math.PI : Math.PI/2))) continue;
+        X = cp*Math.sin(l); Y = sp; Z = cp*Math.cos(l);
+      }
+      const vx = X*P.eX + Y*P.nX + Z*P.cX, vy = X*P.eY + Y*P.nY + Z*P.cY, vz = Y*P.nZ + Z*P.cZ;
+      const u = ((Math.atan2(vy, vx)/Math.PI + 1)/2*tw) | 0, v = ((0.5 - Math.asin(vz > 1 ? 1 : vz < -1 ? -1 : vz)/Math.PI)*th) | 0;
+      const si = ((v >= th ? th - 1 : v)*tw + (u >= tw ? tw - 1 : u))*4;
+      const d = X*LIGHT[0] + Y*LIGHT[1] + Z*LIGHT[2], f = lit*0.8*(0.36 + 0.7*(d > 0 ? d : 0)) + a*0.5, o = (j*w + i)*4;
+      out[o] = src[si]*f; out[o + 1] = src[si + 1]*f; out[o + 2] = src[si + 2]*f; out[o + 3] = 255;
+    }
+  }
+  texG.putImageData(texBuf, 0, 0);
+  g.imageSmoothingEnabled = true; g.drawImage(texC, 0, 0, W, H);
+  return true;
+}
+const pageQ = new URLSearchParams(location.search);
+if(pageQ.get('embed') === '1') document.querySelector('.app').classList.add('embed');
+const lookStore = {get(){ try { return localStorage.getItem('fp-globe'); } catch(e){ return null; } }, set(v){ try { localStorage.setItem('fp-globe', v); } catch(e){} },
+  get2(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }, set2(k, v){ try { localStorage.setItem(k, v); } catch(e){} }};
+let globeLook = [pageQ.get('globe'), lookStore.get()].find(v => v in LOOK) || 'standard';
+const syncLook = () => document.querySelectorAll('button[data-look]').forEach(b => b.setAttribute('aria-pressed', b.dataset.look === globeLook));
+function setGlobeLook(look){
+  if(!(look in LOOK) || look === globeLook) return;
+  globeLook = look; lookStore.set(look); syncLook(); bump();
+}
+document.querySelectorAll('button[data-look]').forEach(b => b.addEventListener('click', () => setGlobeLook(b.dataset.look)));
+syncLook();
+function setFlat(on, save = true){
+  flatMap = on; projection.clipAngle(on ? null : 90);
+  if(on){ const r = projection.rotate(); projection.rotate([r[0], 0]); setZoom(zoom < 1.6 ? 0 : zoom); }   // from the whole globe: the whole world, flat
+  else setZoom(Math.max(zoom, 1));
+  document.querySelectorAll('.flat-toggle').forEach(b => b.setAttribute('aria-checked', on));
+  if(save) lookStore.set2('fp-flat', on ? '1' : '0');
+  bump(); legend(); howto();
+}
+document.querySelectorAll('.flat-toggle').forEach(b => b.addEventListener('click', () => setFlat(!flatMap)));
+
 /* ---------- base layer: ocean, land and borders, confidence map, states, selection, place names ---------- */
 function drawBase(g, pth, full, under){
-  const k = projection.scale(), cx = W/2, cy = H/2, round = 1 - alpha;
+  const k = projection.scale(), cx = W/2, cy = H/2, round = 1 - alpha, L = LOOK[globeLook];
   g.setTransform(dpr, 0, 0, dpr, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
-  g.fillStyle = C.bg; g.fillRect(0, 0, W, H);
-  g.fillStyle = C.fg;
-  for(const s of stars){ g.globalAlpha = s[3]; g.fillRect(s[0]*W, s[1]*H, s[2], s[2]); }
-  if(round > 0.02){
+  g.fillStyle = L.space; g.fillRect(0, 0, W, H);
+  g.fillStyle = '#e8edf7';
+  if(L.stars) for(const s of stars){ g.globalAlpha = s[3]*L.stars; g.fillRect(s[0]*W, s[1]*H, s[2], s[2]); }
+  if(round > 0.02 && L.atmo){
     g.globalAlpha = round;
-    const a = g.createRadialGradient(cx, cy, k*0.96, cx, cy, k*1.16);           // atmosphere
-    a.addColorStop(0, 'rgba(120,180,255,.38)'); a.addColorStop(1, 'rgba(120,180,255,0)');
-    g.fillStyle = a; g.beginPath(); g.arc(cx, cy, k*1.16, 0, 7); g.fill();
+    const out = L.atmoOut, col = L.atmo;
+    const a = g.createRadialGradient(cx, cy, k*0.96, cx, cy, k*out);           // atmosphere
+    a.addColorStop(0, col); a.addColorStop(1, col.replace(/[\d.]+\)$/, '0)'));
+    g.fillStyle = a; g.beginPath(); g.arc(cx, cy, k*out, 0, 7); g.fill();
   }
   g.globalAlpha = 1;
-  g.beginPath(); pth({type:'Sphere'}); g.fillStyle = C.ocean; g.fill();
-  g.beginPath(); pth(graticule); g.strokeStyle = C.line; g.globalAlpha = .35; g.lineWidth = .5; g.stroke(); g.globalAlpha = 1;
+  g.beginPath(); pth({type:'Sphere'}); g.fillStyle = L.ocean; g.fill();
+  const textured = !!L.texture && drawTexture(g, !full);
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if(L.graticule){ g.beginPath(); pth(graticule); g.strokeStyle = L.line; g.globalAlpha = L.graticule; g.lineWidth = .5; g.stroke(); g.globalAlpha = 1; }
   const vb = alpha >= 0.5 ? viewBounds(alpha > 0.9 ? 0.1 : 0.3) : null;
   const land = full && alpha >= 0.5 && world50 ? world50.features : feats;
   if(alpha > 0.95) projection.precision(0);   // nearly flat: segments stay straight, and resampling was most of the cost
   const landP = new Path2D(), pc = pth.context();   // built once: fill, clip and outline all reuse it
   pth.context(landP); for(const f of land) if(!vb || fhit(f._b, vb)) pth(f); pth.context(pc);
-  g.fillStyle = C.land; g.fill(landP); g.strokeStyle = C['land-line']; g.lineWidth = .6; g.stroke(landP);
+  if(!textured){ g.fillStyle = L.land || C.land; g.fill(landP); } g.strokeStyle = L.border; g.lineWidth = L.borderW; g.stroke(landP);
   if(!under){
     if(state.view === 'trust' && !state.live){
       // units of coastal cells reach into the sea: land only. The clip is kept for still frames; a moving globe shows a few pixels of spill instead of paying for it every frame
       if(TR){ if(full){ g.save(); g.clip(landP); } drawTrust(g, vb); if(full) g.restore(); }
-      g.strokeStyle = C.bg; g.lineWidth = .6; g.stroke(landP);
+      g.strokeStyle = L.space; g.lineWidth = .6; g.stroke(landP);
     }
-    if(full && alpha > 0.9 && vb && stateMap.size){   // state and province borders of the visible area
+    if(disp.states && full && alpha > 0.9 && vb && stateMap.size){   // state and province borders of the visible area
       g.beginPath(); for(const s of stateMap.values()) if(hits(s.bbox, vb)) pth(s._ml);
       g.globalAlpha = Math.min(1, (alpha - .9)*10)*.5; g.strokeStyle = C.muted; g.lineWidth = .6; g.stroke(); g.globalAlpha = 1;
     }
     const out = selOutline(full);
     if(out){ g.beginPath(); pth(out); if(!/LineString/.test(out.type)){ g.fillStyle = 'rgba(143,201,255,.06)'; g.fill(); } g.strokeStyle = C.accent; g.lineWidth = 1.5; g.stroke(); }
-    if(round > 0.02){
+    if(round > 0.02 && L.limb){ g.globalAlpha = round; g.beginPath(); g.arc(cx, cy, k, 0, 7); g.strokeStyle = L.limb; g.lineWidth = 1; g.stroke(); g.globalAlpha = 1; }
+    if(round > 0.02 && L.shade){
       const s = g.createRadialGradient(cx - k*.3, cy - k*.3, k*.2, cx, cy, k);    // shading toward the limb
       s.addColorStop(0, 'rgba(0,0,0,0)'); s.addColorStop(1, 'rgba(0,0,0,.5)');
       g.globalAlpha = round; g.fillStyle = s; g.beginPath(); g.arc(cx, cy, k, 0, 7); g.fill(); g.globalAlpha = 1;
     }
-    if(full && alpha > 0.9 && viewPlaces && viewPlaces.length){   // names of the largest places in view, skipping overlaps
-      g.font = '11px Inter, system-ui, sans-serif'; g.textBaseline = 'middle'; g.lineJoin = 'round';
+    if(disp.places && full && alpha > 0.9 && viewPlaces && viewPlaces.length){   // names of the largest places in view, skipping overlaps
+      g.font = '11px "Source Sans 3", system-ui, sans-serif'; g.textBaseline = 'middle'; g.lineJoin = 'round';
       const boxes = [];
       for(const p of viewPlaces){
         if(boxes.length >= 25) break;
@@ -427,11 +539,11 @@ function sqFlush(g, from, to, count, a, glow){   // counting sort by bucket, the
     const j0 = sqCount[b], j1 = sqCount[b + 1]; if(j0 === j1) continue;
     const q = (b + .5)/NB; g.fillStyle = count ? lut(seqLUT, 0.2 + 0.7*q) : lut(divLUT, q);
     if(glow){   // one soft glow, only on the round globe while it is still
-      g.globalAlpha = (0.3 + 0.7*q)*0.1*a; g.beginPath();
+      g.globalAlpha = Math.min(1, (0.3 + 0.7*q)*0.1*fireGain)*a; g.beginPath();
       for(let j=j0;j<j1;j++){ const i = sqOrder[j], r = SQ.s[i]*1.8; g.moveTo(SQ.x[i] + r, SQ.y[i]); g.arc(SQ.x[i], SQ.y[i], r, 0, 7); }
       g.fill();
     }
-    g.globalAlpha = (count ? 0.3 + 0.45*q : 0.8)*a; g.beginPath();
+    g.globalAlpha = (count ? Math.min(1, (0.3 + 0.45*q)*fireGain) : 0.8)*a; g.beginPath();
     for(let j=j0;j<j1;j++){ const i = sqOrder[j], s = SQ.s[i], h = s/2; g.rect(SQ.x[i] - h, SQ.y[i] - h, s, s); }
     g.fill();
   }
@@ -446,7 +558,7 @@ function cells0(vb, box){
   forVisible(area, u => {
     if(box && !(lonD[u] > box[0] && lonD[u] < box[2] && latD[u] > box[1] && latD[u] < box[3])) return;
     const v = rd(u*T + t);
-    if(count ? v < 1 : (v < 3 && med[u] < 3)) return;
+    if(count ? v < minDens : (v < 3 && med[u] < 3) || (minDens > 1 && v < minDens)) return;
     if(!projU(ux[u], uy[u], uz[u], side)) return;
     if(count) sqPush(PX[0], PX[1], side, Math.min(NB-1, Math.floor(Math.sqrt(Math.min(1, v/VMAX))*NB)), v, 0, u);
     else { const r = (v + 1)/(med[u] + 1); sqPush(PX[0], PX[1], side, Math.min(NB-1, Math.floor(anomU(r)*NB)), r, 0, u); }
@@ -456,14 +568,14 @@ function drawLive0(g, cells, skip, a, moving){   // the last 7 days on 0.5 degre
   const k = PC.k, zs = 0.75 + 0.3*(k/S0), foot = 0.55*k*RES*RAD;
   g.globalCompositeOperation = 'lighter';
   for(const c of cells){
-    const v = c[state.harm ? 3 : 2]; if(v < 0.5) continue;
+    const v = c[state.harm ? 3 : 2]; if(v < Math.max(0.5, minDens)) continue;
     const lon = c[0] + RES/2, lat = c[1] + RES/2;
     if(skip && inBox(skip, lon, lat)) continue;
     if(!projLL(lon, lat, 16)) continue;
     const q = Math.sqrt(Math.min(1, v*4/VMAX)), r = clamp(Math.max(foot, (0.7 + 2.5*q)*zs), 0.8, 14);
     g.fillStyle = lut(seqLUT, 0.2 + 0.7*q);
-    if(!moving){ g.globalAlpha = (0.3 + 0.7*q)*0.1*a; g.beginPath(); g.arc(PX[0], PX[1], r*2.2, 0, 7); g.fill(); }
-    g.globalAlpha = (0.3 + 0.45*q)*a; g.beginPath(); g.arc(PX[0], PX[1], r, 0, 7); g.fill();
+    if(!moving){ g.globalAlpha = Math.min(1, (0.3 + 0.7*q)*0.1*fireGain)*a; g.beginPath(); g.arc(PX[0], PX[1], r*2.2, 0, 7); g.fill(); }
+    g.globalAlpha = Math.min(1, (0.3 + 0.45*q)*fireGain)*a; g.beginPath(); g.arc(PX[0], PX[1], r, 0, 7); g.fill();
   }
 }
 
@@ -547,7 +659,7 @@ function drawL1(g, d, a){
   g.globalCompositeOperation = count ? 'lighter' : 'source-over';
   for(let b=0;b<NB;b++){
     const q = (b + .5)/NB; g.fillStyle = count ? lut(seqLUT, 0.2 + 0.7*q) : lut(divLUT, q);
-    g.globalAlpha = (count ? 0.3 + 0.45*q : 0.8)*a; g.beginPath();
+    g.globalAlpha = (count ? Math.min(1, (0.3 + 0.45*q)*fireGain) : 0.8)*a; g.beginPath();
     for(let j=0;j<nQ;j++){ if(d.b[qI[j]] !== b) continue; g.rect(qX[j] - h, qY[j] - h, side, side); }
     g.fill();
   }
@@ -669,7 +781,7 @@ function tileSquares(e, L, tb, box, vb){   // push the squares of one tile for t
     for(let i=a;i<b;i++){
       const id = d.idx[i]; if(id > last) break;
       const col = id % 100; if(col < c0 || col > c1) continue;
-      const v = tileVal(d, ua, i, filt); if(v*f100 < 1) continue;
+      const v = tileVal(d, ua, i, filt); if(v*f100 < minDens) continue;
       if(!projU(d.vx[id], d.vy[id], d.vz[id], side)) continue;
       sqPush(PX[0], PX[1], side, Math.min(NB-1, Math.floor(Math.sqrt(Math.min(1, v*f100/VMAX))*NB)), v, L, -1);
     }
@@ -734,7 +846,7 @@ function decodePB(buf){
 function loadPB(){
   if(pbOff) return;
   fetch('api/live/points.bin').then(r => { if(!r.ok){ const x = new Error(r.status); x.status = r.status; throw x; } return r.arrayBuffer(); })
-    .then(buf => { PB = decodePB(buf); $('dRange').max = PB.h.days || 7; $('dRange').hidden = !state.live; dirty = true; legend(); })
+    .then(buf => { PB = decodePB(buf); $('dRange').max = PB.h.days || 7; renderTime(); })
     .catch(() => { pbOff = true; });   // keep the per-view request
 }
 const pbStrong = () => PB && PB.h.strong_mw != null ? +PB.h.strong_mw : strongMW();
@@ -810,7 +922,7 @@ function drawMP(g){   // each detection as a square of its pixel size on the gro
 function drawFire(g, moving, now){
   nQ = 0; l1Shown = null; SQ.n = 0;
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const flat = isFlat(), vb = flat ? viewBounds(0.1) : null, glow = alpha < 0.5 && !moving;
+  const flat = isFlat(), vb = flat ? viewBounds(0.1) : null, glow = alpha < 0.5 && !moving && LOOK[globeLook].glow;
   let lv = 0;
   if(state.live && PB && (zoom >= 1.8 || dayPick >= 0)){ drawPB(g); lv = 4; }   // one day has no 0.5 degree grid: single detections at every zoom
   else if(!state.live && state.view !== 'trust' && !tilesOff){
@@ -901,8 +1013,8 @@ function anchor(ll, x, y){   // turn the map so the place ll sits under the scre
   }
 }
 
-let last = 0, playing = false, playAcc = 0, speed = 1, rng = [0, T-1],   // Play runs inside rng, at speed times one month per 110 ms
-     lastCheck = 0, lastTileReq = 0;
+const PLAY = {from:0, to:0, speed:1, loop:false};   // Play runs inside from..to, at speed times one month per 110 ms
+let last = 0, playing = false, playAcc = 0, lastCheck = 0, lastTileReq = 0;
 function tick(now){
   const dt = Math.min(100, now - last); last = now;
   if(fly){
@@ -913,7 +1025,7 @@ function tick(now){
   } else if(spin && !dragging && !drawMode){
     const r = projection.rotate(); projection.rotate([r[0] + dt*0.004, r[1]]); dirty = true;
   }
-  if(playing){ playAcc += dt; if(playAcc > 110/speed){ playAcc = 0; if(state.t >= rng[1]) setPlaying(false); else setT(state.t + 1); } }
+  if(playing){ playAcc += dt; if(playAcc > 110/PLAY.speed){ playAcc = 0; if(state.t >= PLAY.to){ if(PLAY.loop) setT(PLAY.from); else setPlaying(false); } else setT(state.t + 1); } }
   const mv = isMoving(now);
   if(mv) lastMove = now; else if(wasMoving) dirty = true;   // movement ended: one full-detail frame
   wasMoving = mv;
@@ -952,7 +1064,7 @@ function showTip(text, x, y){ tip.textContent = text; tip.hidden = false; tip.st
 function local(e){ const b = cv.getBoundingClientRect(); return [e.clientX - b.left, e.clientY - b.top]; }
 function lonLat(x, y){   // screen point -> [lon, lat] on the visible side, or null
   const k = projection.scale(), q = blend.invert((x - W/2)/k, (H/2 - y)/k);
-  if(!(Math.abs(q[0]) <= Math.PI/2 && Math.abs(q[1]) <= Math.PI/2)) return null;
+  if(!(Math.abs(q[0]) <= (flatMap ? Math.PI : Math.PI/2) && Math.abs(q[1]) <= Math.PI/2)) return null;
   const ll = projection.invert([x, y]); return ll && !isNaN(ll[0]) && !isNaN(ll[1]) ? ll : null;
 }
 const pinchAt = () => { const [a, b] = [...pointers.values()]; return [Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, (a[0] + b[0])/2, (a[1] + b[1])/2]; };
@@ -984,7 +1096,7 @@ cv.addEventListener('pointermove', e => {
   if(dragging){
     const dx = x - dragging.x, dy = y - dragging.y;
     if(Math.abs(dx) + Math.abs(dy) > 4){ dragging.moved = true; spin = false; fly = null; }
-    if(dragging.moved){ const s = 57.3/projection.scale(); projection.rotate([dragging.l + dx*s, clamp(dragging.p - dy*s, -80, 80)]); dirty = true; }
+    if(dragging.moved){ const s = 57.3/projection.scale(); projection.rotate([dragging.l + dx*s, flatOut() ? 0 : clamp(dragging.p - dy*s, -80, 80)]); dirty = true; }
     return;
   }
   if(state.view === 'trust' && !state.live){
@@ -1069,7 +1181,7 @@ function select(sel, where){
   $('pKind').textContent = sel.kind === 'state' ? `State or province, ${sel.country}` : KIND[sel.kind];
   $('pName').textContent = sel.name; $('mapTitle').textContent = sel.kind === 'world' ? '' : sel.name;
   if(sel.kind !== 'country' && sel.kind !== 'state') $('stateWrap').hidden = true;
-  bump(); saveHash();   // the selection outline is on the base map
+  bump(); saveHash(); renderCrumb();   // the selection outline is on the base map
   loadLive(); loadLook();
   return loadMonths();
 }
@@ -1151,8 +1263,20 @@ function finishPolygon(){
 function clearPlace(){
   $('q').value = ''; toast('');
   flyTo(projection.rotate()[0], -20, 1);
-  select({kind:'world', name:'Earth'}, null).then(() => { spin = !reduced; });
+  select({kind:'world', name:'Earth'}, null);
 }
+function renderCrumb(){
+  const s = state.sel, el = $('crumb'), part = (label, on, act) => `<button type="button" class="${on ? 'on' : ''}" ${act ? `data-act="${act}"` : 'disabled'}>${esc(label)}</button>`;
+  let h = part('World', s.kind === 'world', s.kind === 'world' ? '' : 'world');
+  if(s.kind === 'country' || s.kind === 'state'){
+    const c = s.kind === 'country' ? s.c : s.c;
+    h += '<em>›</em>' + part(s.kind === 'country' ? s.name : (s.country || ''), s.kind === 'country', s.kind === 'state' && c >= 0 ? 'c' + c : '');
+    if(s.kind === 'state') h += '<em>›</em>' + part(s.name, true, '');
+  } else if(s.kind !== 'world') h += '<em>›</em>' + part(s.kind === 'box' ? (s.label || 'Box') : 'Drawn area', true, '');
+  el.innerHTML = h;
+}
+$('crumb').addEventListener('click', e => { const b = e.target.closest('button[data-act]'); if(!b) return;
+  if(b.dataset.act === 'world') $('wholeBtn').click(); else selectCountry(+b.dataset.act.slice(1)); });
 function howto(){
   $('howto').textContent = drawMode === 'box' ? 'Drag a rectangle over the area you want.' : drawMode === 'poly' ? 'Click the corners of the area. Double-click or press Finish shape to close it.'
     : isFlat() && stateMap.size ? 'Drag to move. Scroll to zoom. Click a state to choose it.' : 'Drag to spin. Scroll to zoom. Click a country to fly in.';
@@ -1269,16 +1393,23 @@ function syncWhen(){
   $('pYear').value = yearOf(state.t); $('pMonth').value = monOf(state.t);
 }
 
-const liveLabel = () => dayPick < 0 || !PB ? 'Last 7 days' : 'Last 7 days: ' + dShort(new Date(PB.first.getTime() + dayPick*864e5).toISOString().slice(0, 10)) + ' only';
+const pbDay = d => dShort(new Date(PB.first.getTime() + d*864e5).toISOString().slice(0, 10));   // day d of the week file, as "9 Nov"
+const liveLabel = () => dayPick < 0 || !PB ? 'Last 7 days' : `Last 7 days: ${pbDay(dayPick)} only`;
+function renderDays(){   // the ruler in the last 7 days: the left end is all days, then one mark per day
+  const n = +$('dRange').max, x = v => (100*v/n).toFixed(3) + '%';
+  let h = ''; for(let v=0;v<=n;v++) h += `<i class="r-tick major" style="left:${x(v)}"></i><span class="r-lab" style="left:${x(v)}">${v ? pbDay(v - 1) : 'All'}</span>`;
+  $('dRuler').innerHTML = h + `<i class="r-now" style="left:${x(dayPick + 1)}"></i>`;
+}
 function renderTime(){
   const t = state.t;
   $('readout').textContent = state.live ? liveLabel() : `${MONTHS[monOf(t)]} ${yearOf(t)}`;
   $('tRange').value = t;
-  $('tRange').hidden = state.live && !!PB; $('dRange').hidden = !(state.live && PB);   // in the last 7 days the slider picks a day
+  const days = state.live && !!PB;   // in the last 7 days the slider and the ruler pick a day
+  $('tRange').hidden = $('ruler').hidden = days; $('dRange').hidden = $('dRuler').hidden = !days; if(days) renderDays();
   $('sensorNow').textContent = state.live ? 'Newer satellite, first numbers' + (!state.harm ? ', as reported' : state.unit === 'viirs' ? '' : ', strict count')
     : state.harm ? UNIT[state.unit].now(t)
     : 'Counts as reported' + (months && months[t].raw.n20 + months[t].raw.snpp > 0 ? ', newer satellites included' : '');
-  syncWhen(); legend(); dirty = true;
+  syncWhen(); legend(); dirty = true; renderRuler();
   if(!months) return;
   cal.querySelectorAll('.now').forEach(el => el.classList.remove('now'));
   const now = cal.querySelector(`[data-t="${t}"]`); if(now) now.classList.add('now');
@@ -1293,9 +1424,11 @@ function liveWeek(){   // the last 7 days against a normal week of the same cale
   const ok = state.harm && (state.time === 'all' || HAS.night);   // a night-only week needs a night-only normal
   return {n:state.harm ? liveArea.harmonized : liveArea.raw, normal:ok ? medOf(lm)*7/days : null, lm};
 }
-function setStatus(icon, dir, level, line, src){
+function setStatus(icon, dir, level, line, src, ratio){
   $('stIcon').textContent = icon; $('stIcon').className = 'v-icon ' + dir; $('status').className = 'status ' + dir;
   $('stLevel').textContent = level; $('stLine').textContent = line; $('stSrc').textContent = src;
+  const g = ratio != null && isFinite(ratio); $('gauge').hidden = !g;   // marker at the ratio, 1/4x to 4x like the map
+  if(g) $('gaugeMark').style.left = (100*anomU(ratio)).toFixed(1) + '%';
 }
 function renderAnswer(){
   if(!months || !S) return;
@@ -1307,9 +1440,9 @@ function renderAnswer(){
     else if(!lw) setStatus('●', 'flat', 'Last 7 days', 'Loading the last 7 days…', '');
     else if(lw.normal == null) setStatus('●', 'flat', 'Last 7 days', `${fmt(lw.n)} ${unitWord()}.`, src + (state.harm ? ' No normal week to compare with for this choice yet.' : ' Counts as reported.'));
     else if(lw.normal < 1 && lw.n < 5) setStatus('●', 'flat', 'Off season', `Hardly any fire in a normal ${MONTHS[lw.lm]} week here.`, src);
-    else { const r = lw.n/Math.max(lw.normal, 1), L = LEVEL[ratioLevel(r)]; setStatus(L[0], L[1], L[2], ratioText(r, `${MONTHS[lw.lm]} week`) + '.', src); }
+    else { const r = lw.n/Math.max(lw.normal, 1), L = LEVEL[ratioLevel(r)]; setStatus(L[0], L[1], L[2], ratioText(r, `${MONTHS[lw.lm]} week`) + '.', src, r); }
   } else if(!state.harm){
-    setStatus('●', 'flat', 'Counts as reported', `${fmt(cur)} fire detections in ${MONTHS[m]} ${yr}.`, `These counts cannot be compared across years. Choose "${UNIT[UNITS[0]].label}" under Advanced for a verdict.`);
+    setStatus('●', 'flat', 'Counts as reported', `${fmt(cur)} fire detections in ${MONTHS[m]} ${yr}.`, `These counts cannot be compared across years. Choose "${UNIT[UNITS[0]].label}" under Counts in the research tools for a verdict.`);
   } else if(d3.max(S) < 1){
     setStatus('', 'flat', 'No fires on record', `Nothing on record in this area since ${Y0}.`, '');
   } else {
@@ -1318,7 +1451,7 @@ function renderAnswer(){
       + (x.filled >= 1 ? ` Includes ${fmt(x.filled)} for days when the reference satellite did not record.` : '');
     if(x.anomaly === 'insufficient' && cur < 5) setStatus('●', 'flat', 'Off season', `Hardly any fire in a normal ${MONTHS[m]} here.`, src);
     else if(x.anomaly === 'insufficient') setStatus('▲', 'up', 'Higher than normal', `${fmt(cur)} fire detections in a month that is usually quiet here.`, src);
-    else { const L = LEVEL[x.anomaly] || ['●', 'flat', 'Normal']; setStatus(L[0], L[1], L[2], ratioText(cur/Math.max(x.median, 1), MONTHS[m]) + '.', src); }
+    else { const L = LEVEL[x.anomaly] || ['●', 'flat', 'Normal'], r = cur/Math.max(x.median, 1); setStatus(L[0], L[1], L[2], ratioText(r, MONTHS[m]) + '.', src, r); }
   }
 
   const sm = lastSeason = seasonModel(t), tl = [];
@@ -1326,7 +1459,10 @@ function renderAnswer(){
   tl.push([t === T-1 ? `This month (${MON[m]} ${yr})` : `${MONTHS[m]} ${yr}`, fmt(cur), state.harm ? `${unitWord()}${isEst(t) ? ', estimated' : ''}. Normal is about ${fmt(x.median)}.` : unitWord()]);
   tl.push(['Season so far', sm && sm.ratio != null ? pct(sm.ratio) : '–', sm && sm.ratio != null ? `of a normal season, since ${MON[sm.start]} ${yearOf(sm.t0)}` : 'Too early in the season to tell']);
   lastTiles = tl;
-  $('tiles').innerHTML = tl.map(([a, v, s]) => `<div class="tile"><span class="t-name">${esc(a)}</span><span class="t-val">${esc(v)}</span><span class="t-sub">${esc(s)}</span></div>`).join('');
+  const big = state.live && tl.length === 3 ? 0 : tl.length - 2;   // the period you are looking at leads
+  $('tiles').innerHTML = [tl[big], ...tl.filter((_, i) => i !== big)].map(([a, v, s], i) => i === 0
+    ? `<div class="fig"><span class="t-name">${esc(a)}</span><span class="t-val">${esc(v)}</span><span class="t-sub">${esc(s)}</span></div>`
+    : `<div class="row-fig"><span class="t-name">${esc(a)}</span><span class="t-val">${esc(v)}</span><span class="t-sub">${esc(s)}</span></div>`).join('');
 
   const ex = [];
   if(state.live && liveArea){
@@ -1342,6 +1478,96 @@ function renderAnswer(){
   if(like.length) ex.push(`<p>${yearOf(T-1)} so far looks most like ${like.join(', ')}.</p>`);
   $('extra').innerHTML = ex.join(''); $('extraSec').hidden = !ex.length;
   renderSeason(sm);
+  renderTech(x, cur);
+  renderCard();
+}
+function renderCard(){
+  const s = state.sel, fig = document.querySelector('#tiles .fig'), est = state.harm && !state.live && isEst(state.t);
+  $('mcPlace').textContent = `${s.kind === 'world' ? 'Earth' : s.name} · ${$('pSub').textContent}`;
+  $('mcBig').textContent = fig ? fig.querySelector('.t-val').textContent : '';
+  $('mcUnit').textContent = !state.harm ? 'fire detections, as reported' : (state.unit === 'viirs' ? 'fire detections, VIIRS counts' : 'fire detections, strict long record') + (est ? ', estimated' : '');
+  $('mcGauge').hidden = $('gauge').hidden; $('mcMark').style.left = $('gaugeMark').style.left;
+  $('mcLine').textContent = $('stLine').textContent;
+}
+
+// the "source" of a month in the calendar response (app.py): VIIRS units first, then the strict record
+const SRC_LONG = {terra_up:'Terra MODIS, estimated in VIIRS counts', modis_up:'Aqua and Terra MODIS, estimated in VIIRS counts', snpp_scaled:'VIIRS Suomi NPP, scaled to NOAA-20',
+  n20:'VIIRS NOAA-20, as measured', snpp:'VIIRS Suomi NPP, as measured', terra_scaled:'Terra MODIS, scaled to Aqua', aqua:'Aqua MODIS, as measured',
+  n20_model:'VIIRS NOAA-20, adjusted to Aqua', snpp_model:'VIIRS Suomi NPP, adjusted to Aqua'};
+const unitName = () => state.unit === 'viirs' ? VAL.viirs.unit : VAL.unit;
+const trow = (k, v, note) => `<tr><th scope="row">${k}</th><td>${v}${note ? `<span class="tn">${note}</span>` : ''}</td></tr>`;
+const num = v => v == null || !isFinite(v) ? '–' : fmt(v);
+function renderTech(x, cur){
+  let h = '';
+  const vi = state.unit === 'viirs';
+  if(state.live){
+    $('techSpan').textContent = liveArea ? `${liveArea.from} to ${liveArea.to}` : '';
+    if(liveArea) h = trow('Sensor', esc(liveArea.sensor || 'VIIRS NOAA-20, near-real-time'))
+      + trow('Detections', num(liveArea.raw), 'after the confidence and static-source filters')
+      + trow(vi ? 'In VIIRS counts' : 'In the strict record', num(liveArea.harmonized), vi ? 'the main count is VIIRS, so no conversion' : 'converted to Aqua units with the same tables')
+      + (liveArea.night_share != null ? trow('Night share', pct(liveArea.night_share)) : '')
+      + (liveArea.strong != null ? trow('Strong detections', `${num(liveArea.strong)}`, `FRP ≥ ${num(liveArea.strong_mw)} MW (90th percentile of the week)`) : '')
+      + (liveArea.static_removed != null ? trow('Static sources removed', num(liveArea.static_removed), 'gas flares, volcanoes, industry') : '');
+    else h = trow('Status', 'Loading the last 7 days…');
+  } else {
+    const t = state.t, m = monOf(t), n = months.filter((_, i) => monOf(i) === m).length, P = x.pred || {}, B = UNIT[state.unit].base;
+    $('techSpan').textContent = `${MONTHS[m]} ${yearOf(t)}`;
+    h = trow('Unit', state.harm ? esc(unitName()) : 'detections as reported')
+      + trow(state.harm ? 'Value shown' : 'Value shown (raw)', num(cur), state.time !== 'all' ? `${state.time} fires only` : '')
+      + (state.harm ? trow('Likely range', x.low !== x.high ? `${num(x.low)} – ${num(x.high)}` : 'measured, no range', x.low !== x.high ? '10th to 90th percentile of hidden-year errors at this size' : '')
+        + trow('Source', esc(SRC_LONG[x.source] || x.source), isEst(t) ? 'estimated' : 'measured') : '')
+      + trow('Raw counts', Object.keys(SENSOR).filter(k => x.raw[k]).map(k => `${SENSOR[k]} ${num(x.raw[k])}`).join('<br>') || '0')
+      + (x.filled >= 1 ? trow('Filled from Terra', num(x.filled), 'days Aqua did not record') : '')
+      + (vi ? (P.modis > 0 && !isEst(t) ? trow('Out-of-sample check', `Estimate from MODIS: ${num(P.modis)}`, 'from ratios fitted without this year') : '')
+         : (P.snpp || P.n20 ? trow('Out-of-sample check', `VIIRS adjusted to Aqua: ${num(P.snpp || P.n20)}`, 'from tables fitted without this year') : ''))
+      + trow(`Median ${B[0]}–${B[1]}`, num(x.median))
+      + trow('Ratio to median', x.median > 0 ? (cur/x.median).toFixed(2) + '×' : '–')
+      + trow('Anomaly class', esc((x.anomaly || '–').replace(/_/g, ' ')), 'from the 10/33/67/90 % quantiles of the normal years')
+      + trow('Rank', `${ordinal(x.rank)} of ${n} ${MONTHS[m]}s`)
+      + (x.night != null && x.harmonized > 0 ? trow('Night share', pct(x.night/x.harmonized), x.night_median != null && x.median > 0 ? `normal ${pct(x.night_median/x.median)}` : '') : '')
+      + (x.frp != null ? trow('Fire radiative power', `${num(x.frp)} MW`, x.frp_median > 0 ? `${(x.frp/x.frp_median).toFixed(2)}× the median month` : '') : '');
+  }
+  $('techTable').innerHTML = h;
+  renderAccess();
+}
+function renderMethod(){   // how the record of the current unit is made, and how it did on years left out of the fit (validation.json)
+  const V = VAL.viirs, o = SAT.overall, ag = SAT.anomaly_agreement;
+  $('methodTable').innerHTML = state.unit === 'viirs' && V
+    ? trow('Unit', esc(V.unit))
+      + trow('Reference', SENSOR[V.reference.toLowerCase()] || esc(V.reference), `measured from ${monthName(VSTART)}`
+        + (V.ref_start && V.ref_start.slice(0, 7) !== V.start.slice(0, 7) ? `; ${SENSOR.snpp} until ${monthName(tAt(V.ref_start))}, scaled to match` : ''))
+      + trow('Earlier months', 'Estimated from MODIS', `ratio of VIIRS to MODIS per 5° tile and calendar month; Aqua weighs ${pct(V.weight_aqua)}, Terra ${pct(1 - V.weight_aqua)}`)
+      + trow('Fit window', `${V.window[0]} – ${V.window[1]}`, 'MODIS and VIIRS both flying')
+      + trow('Hidden-year error', pct(V.both.error), `Aqua alone ${pct(V.aqua.error)} · Terra alone ${pct(V.terra.error)}`)
+      + trow('Total bias', V.both.bias.toFixed(3), 'estimate / measured, all hidden years')
+      + (V.both.night != null ? trow('Night error', pct(V.both.night)) : '')
+      + (V.twin ? trow('Two VIIRS instruments', pct(V.twin.raw), `as reported; ${pct(V.twin.scaled)} after scaling. No method can do better.`) : '')
+      + (V.both.anomaly_agreement ? trow('Same anomaly class', pct(V.both.anomaly_agreement.same), `same or next: ${pct(V.both.anomaly_agreement.within_one)}`) : '')
+      + trow('Normal years', `${UNIT.viirs.base[0]}–${UNIT.viirs.base[1]}`, 'measured years only')
+    : trow('Unit', esc(VAL.unit))
+      + trow('Reference', SENSOR.aqua, `measured ${monthName(AQUA)} to ${monthName(MODEL - 1)}`)
+      + trow('Method', 'Conversion tables by fire strength', `then a monthly ratio per region; ${SENSOR[PKEY]} adjusted from ${monthName(MODEL)}`)
+      + trow('Fit window', `${SAT.window[0]} – ${SAT.window[1]}`, 'Aqua and VIIRS both flying, stable Aqua orbit')
+      + trow('Hidden-year error', pct(o.table), `raw ${pct(o.raw)} · one factor ${pct(o.global_factor)} · ratio ${pct(o.ratio)}`)
+      + (o.bias_table != null ? trow('Total bias', o.bias_table.toFixed(3), 'converted / measured, all hidden years') : '')
+      + (o.day != null ? trow('Day / night error', `${pct(o.day)} / ${pct(o.night)}`) : '')
+      + trow('Terra conversion', pct(VAL.terra.error), 'months before August 2002')
+      + (VAL.twin ? trow('Two VIIRS instruments', `${pct(VAL.twin.overlap)} per tile-month`, `after 2021: ${pct(VAL.twin.after)}`) : '')
+      + (ag ? trow('Same anomaly class', pct(ag.table), `same or next: ${pct(ag.table_within_one)}`) : '')
+      + trow('Normal years', `${UNIT.aqua.base[0]}–${UNIT.aqua.base[1]}`);
+  $('methodNote').textContent = 'Error = sum |estimate − measured| / sum measured, per 5° tile and month, on years left out of the fit. Values are for the data this server was built from.';
+}
+function renderAccess(){
+  const [path, opt] = request(mParam()), abs = p => new URL(p, location.href).href;
+  const rows = opt.method === 'POST'
+    ? `<p>This area is a drawn polygon. Send it as JSON: <code>POST ${esc(abs('api/calendar'))}</code> with <code>{"polygon": …}</code>; add <code>"format": "csv"</code> for a table.</p>`
+    : `<p><span class="ak">Monthly record (JSON)</span><a href="${esc(abs(path))}" target="_blank" rel="noopener"><code>${esc(path)}</code></a></p>
+       <p><span class="ak">Monthly record (CSV)</span><a href="${esc(abs(path + '&format=csv'))}"><code>${esc(path)}&amp;format=csv</code></a></p>`;
+  $('accessBody').innerHTML = rows
+    + `<p><span class="ak">Validation results (JSON)</span><a href="${esc(abs('api/validation'))}" target="_blank" rel="noopener"><code>api/validation</code></a></p>
+       <p><span class="ak">Single detections</span>Download detections (CSV) at the bottom of this panel, for the selected area and the years of the time range.</p>
+       <p><span class="ak">Data</span>NASA FIRMS: MODIS Collection 6.1 (MCD14ML) and VIIRS 375 m (VNP14IMGT, VJ114IMGT), standard processing; last 7 days from the FIRMS near-real-time NOAA-20 file. We acknowledge the use of data from NASA's Fire Information for Resource Management System (FIRMS), part of NASA's Earth Science Data and Information System (ESDIS).</p>
+       <p><span class="ak">Cite this record</span>Fire Pulse (2026). Harmonized MODIS and VIIRS active-fire record, ${Y0}–${yearOf(T-1)}, in ${esc(state.harm ? unitName() : 'detections as reported')}. Built from NASA FIRMS. Not endorsed by NASA.</p>`;
 }
 
 function renderLook(){
@@ -1380,14 +1606,17 @@ function renderSeason(sm){
   if(!sm){ $('season').innerHTML = '<p class="hint">No fires on record here.</p>'; $('seasonSpan').textContent = ''; return; }
   const Hv = 132, ih = Hv - Tp - B, ok = d => !isNaN(d), lab = i => MON[(sm.start + i) % 12];
   const sc = d3.scaleLinear().domain([0, Math.max(1, d3.max(sm.q90), d3.max(sm.cur.filter(ok)) || 0)]).nice(3).range([Tp + ih, Tp]);
-  const x = i => L + iw*i/11, line = d3.line().defined(ok).x((d, i) => x(i)).y(d => sc(d)), area = d3.area().x((d, i) => x(i)).y0((d, i) => sc(sm.q10[i])).y1((d, i) => sc(sm.q90[i]));
+  const x = i => L + 8 + (iw - 16)*i/11, line = d3.line().defined(ok).x((d, i) => x(i)).y(d => sc(d));
   const fy = sm.start === 0 ? `${yearOf(sm.t0)}` : `${yearOf(sm.t0)}–${String(yearOf(sm.t0) + 1).slice(2)}`;
   const est = d3.range(Math.max(0, sm.t0), sm.t0 + sm.k + 1).some(isEst), ec = est ? ' est' : '';
   let h = `<svg viewBox="0 0 ${Wv} ${Hv}" role="img" aria-label="Fire detections added up since ${MONTHS[sm.start]}, this season against a normal season">`;
   sc.ticks(3).forEach(v => { h += `<line class="grid" x1="${L}" x2="${Wv-Rm}" y1="${sc(v)}" y2="${sc(v)}"/><text class="axis" x="${L-6}" y="${sc(v)+4}" text-anchor="end">${sfmt(v)}</text>`; });
   d3.range(12).forEach(i => { h += `<text class="axis" x="${x(i)}" y="${Hv-5}" text-anchor="middle">${lab(i)[0]}</text>`; });
-  h += `<path class="band" d="${area(sm.q50)}"/><path class="med" d="${line(sm.q50)}"/><path class="cur${ec}" d="${line(sm.cur)}"/>`;
-  if(ok(sm.cur[sm.k])) h += `<circle class="dot${ec}" cx="${x(sm.k)}" cy="${sc(sm.cur[sm.k])}" r="4.5"/>`;
+  const bw = Math.min(16, iw/12*0.62);
+  d3.range(12).forEach(i => { h += `<line class="range" x1="${x(i)}" x2="${x(i)}" y1="${sc(sm.q10[i])}" y2="${sc(sm.q90[i])}"/>`; });
+  d3.range(12).forEach(i => { if(!ok(sm.cur[i])) return; const y = sc(sm.cur[i]);
+    h += `<rect class="${i === sm.k ? 'bar-now' : 'bar'}${ec}" x="${x(i) - bw/2}" y="${y}" width="${bw}" height="${Math.max(0, sc(0) - y)}" rx="1.5"/>`; });
+  h += `<path class="med" d="${line(sm.q50)}"/>`;
   d3.range(12).forEach(i => { h += `<rect class="hit" x="${x(i)-iw/22}" y="${Tp}" width="${iw/11}" height="${ih}" data-tip="To the end of ${lab(i)}&#10;This season: ${ok(sm.cur[i]) ? fmt(sm.cur[i]) + (est ? ', estimated' : '') : 'not yet'}&#10;Normal: ${fmt(sm.q50[i])}&#10;8 of 10 seasons: ${fmt(sm.q10[i])} to ${fmt(sm.q90[i])}"/>`; });
   $('season').innerHTML = h + '</svg>';
   $('seasonSpan').textContent = `added up since ${MONTHS[sm.start]}`;
@@ -1437,7 +1666,7 @@ function renderCheck(){
     + (V.twin ? ` Two identical satellites differ by about ${pct(V.twin.raw)}: no method can do better.` : '') : '';
   $('checkSpan').textContent = `${yearOf(t0)} to ${yearOf(t1)}`;
   if(v && state.time !== 'all'){   // the estimate exists for all fires only
-    $('check').innerHTML = ''; $('checkLine').textContent = 'This check compares all fires. Choose "All fires" under Only count to see it.' + tests; return;
+    $('check').innerHTML = ''; $('checkLine').textContent = 'This check compares all fires. Choose "All fires" under Time of day to see it.' + tests; return;
   }
   const sc = d3.scaleLinear().domain([0, Math.max(1, d3.max(aq), d3.max(cv2))]).nice(3).range([Tp + ih, Tp]);
   const x = i => L + iw*i/(n - 1), line = d3.line().x((d,i) => x(i)).y(d => sc(d));
@@ -1457,8 +1686,8 @@ function renderCheck(){
 /* ---------- controls ---------- */
 function setT(t){ state.t = clamp(t, 0, T-1); if(state.t !== T-1) state.pick = true; if(state.live) setLive(false); else renderTime(); }
 function setPlaying(p){
-  if(p){ setLive(false); if(state.t >= rng[1] || state.t < rng[0]) setT(rng[0]); }
-  playing = p; playAcc = 0; $('play').textContent = p ? '❚❚ Pause' : `▶ Play ${MON[monOf(rng[0])]} ${yearOf(rng[0])}–${MON[monOf(rng[1])]} ${yearOf(rng[1])}`;
+  if(p){ setLive(false); if(state.t < PLAY.from || state.t >= PLAY.to) setT(PLAY.from); }
+  playing = p; playAcc = 0; $('play').innerHTML = p ? `<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2.5 1.5h2.4v9H2.5zM7.1 1.5h2.4v9H7.1z" fill="currentColor"/></svg> Pause` : `<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M3 1.5l7 4.5-7 4.5z" fill="currentColor"/></svg> Play`;
   if(!p) saveHash();
 }
 const check = (name, v) => { const r = document.querySelector(`input[name=${name}][value=${v}]`); if(r) r.checked = true; };
@@ -1476,12 +1705,12 @@ function useUnit(){   // globe grids, colour scale, baseline years, confidence m
   Hm = g.h; Nt = g.n; VMAX = g.vmax ??= vmaxOf(g.h); BASE = d3.range(u.base[0], u.base[1] + 1);
   TR = TRS ? TRS[state.unit] : null;
   check('counts', countsNow());
-  $('eras').innerHTML = u.eras.map(([c, f, tip, label]) => `<span class="era ${c}" style="flex:${f}" data-tip="${tip}">${label}</span>`).join('');
-  trustScale(); buildAbout(); bump();
+  trustScale(); buildAbout(); renderMethod(); bump();
 }
 function setView(view){
   if(view === 'trust' && trustOff) view = 'count';   // no confidence map on this server
   state.view = view; check('view', view);
+  document.querySelectorAll('.vbox[data-view]').forEach(b => b.setAttribute('aria-pressed', b.dataset.view === view));
   if(months) renderStatic(); legend(); bump(); saveHash();
 }
 function syncTimeControls(){
@@ -1600,7 +1829,7 @@ function briefing(){
   const calY = mapY + Math.max(mapH, chartH + 70) + 50, Hb = calY + 24 + nY*ch + 90;
   const c = document.createElement('canvas'); c.width = Wb*sc; c.height = Hb*sc;
   const g = c.getContext('2d'); g.scale(sc, sc);
-  const font = (w, s, f) => { g.font = `${w} ${s}px ${f === 'd' ? '"Space Grotesk"' : 'Inter'}, system-ui, sans-serif`; };
+  const font = (w, s, f) => { g.font = `${w} ${s}px ${f === 'd' ? '"Source Serif 4", Georgia, serif' : '"Source Sans 3", system-ui, sans-serif'}`; };
   g.fillStyle = C.bg; g.fillRect(0, 0, Wb, Hb);
   g.fillStyle = C.muted; font(500, 14); g.fillText('FIRE BRIEFING', pad, 38);
   g.fillStyle = C.fg; font(600, 32, 'd'); g.fillText(state.sel.name, pad, 76);
@@ -1687,7 +1916,7 @@ function buildAbout(){
   </table>
   <p>The "compared with normal" level is the same as real Aqua's in ${pct(SAT.anomaly_agreement.table)} of tested tile-months, and the same or the next level in ${pct(SAT.anomaly_agreement.table_within_one)}.
   ${VAL.twin ? ` Two identical VIIRS instruments (Suomi NPP and NOAA-20) disagree by ${pct(VAL.twin.overlap)} after adjustment in the overlap years, and by ${pct(VAL.twin.after)} after 2021. No adjustment can beat the first number.` : ''}
-  Choose "Confidence in the numbers" under Show on the map to see the error by place.</p>
+  Choose Confidence under "Colour the fires by" to see the error by place.</p>
   ${TR ? `<h3>The confidence map</h3>
   <p>The map splits the land into squares of about ${kmOf(TR.deg)} km. ${vi ? `For the main count, each square shows how far the monthly estimate from MODIS was from measured VIIRS in the test years ${TR.years[0]} to ${TR.years[1]}.`
     : `Each square shows how far the adjusted monthly count was from real Aqua in the test years ${TR.years[0]} to ${TR.years[1]}, with ${(TR.satellites || []).map(s => SENSOR[s.toLowerCase()] || s).join(' and ')} tested together.`} ${TR.left_out.length ? `${TR.left_out.length} months when a satellite did not record are left out. ` : ''}Hatched squares had fewer than ${fmt(TR.min_n)} detections in those years: too few to test.</p>
@@ -1711,6 +1940,7 @@ function buildAbout(){
 
 /* ---------- wiring ---------- */
 document.querySelectorAll('input[name=view]').forEach(r => r.addEventListener('change', () => setView(r.value)));
+document.querySelectorAll('.vbox[data-view]').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
 document.querySelectorAll('input[name=counts]').forEach(r => r.addEventListener('change', () => setCounts(r.value)));
 document.querySelectorAll('input[name=time]').forEach(r => r.addEventListener('change', () => setTime(r.value)));
 $('strong').onchange = e => { state.strong = e.target.checked; dirty = true; lastCheck = 0; };
@@ -1722,18 +1952,65 @@ $('wLatest').onclick = () => { setPlaying(false); state.pick = false; setT(T-1);
 $('wPick').onclick = () => { setPlaying(false); state.pick = true; if(state.live) setLive(false); else renderTime(); $('pMonth').focus(); };
 $('pYear').onchange = $('pMonth').onchange = () => { setPlaying(false); setT(tOf(+$('pYear').value, +$('pMonth').value)); };
 $('play').onclick = () => setPlaying(!playing);
-for(const id of ['rFrom', 'rTo']) for(const y of YEARS) $(id).add(new Option(y, y));
-for(const id of ['rFromM', 'rToM']) MON.forEach((m, i) => $(id).add(new Option(m, i)));
-$('rFrom').value = YEARS[0]; $('rTo').value = YEARS.at(-1); $('rFromM').value = monOf(0); $('rToM').value = monOf(T-1);
-function setRange(){   // the timeline and Play cover only the chosen months
-  const a = tOf(+$('rFrom').value, +$('rFromM').value), b = tOf(+$('rTo').value, +$('rToM').value);
-  rng = [clamp(Math.min(a, b), 0, T-1), clamp(Math.max(a, b), 0, T-1)];
-  $('tRange').min = rng[0]; $('tRange').max = rng[1]; $('eras').hidden = rng[0] > 0 || rng[1] < T-1;
-  setPlaying(false); if(!state.live && (state.t < rng[0] || state.t > rng[1])) setT(clamp(state.t, rng[0], rng[1])); else renderTime();
+// the time bar: a ruler of years with brackets for the range and a line for the month shown; the native slider sits on top
+const rulerX = t => ((t + .5)/T*100).toFixed(3) + '%';
+let rulerBuilt = false;
+function renderRuler(){
+  const r = $('ruler'); if(!r || !T) return;
+  if(!rulerBuilt){
+    rulerBuilt = true;
+    let h = '<div class="r-band" id="rBand"></div>';
+    YEARS.forEach(y => { const t = tOf(y, 0); if(t < 0 || t >= T) return; const major = y % 5 === 0;
+      h += `<i class="r-tick${major ? ' major' : ''}" style="left:${rulerX(t)}"></i>` + (major ? `<span class="r-lab" style="left:${rulerX(t)}">${y}</span>` : ''); });
+    h += `<i class="r-tick era" style="left:${rulerX(VSTART)}" title="VIIRS starts, ${monthName(VSTART)}"></i><span class="r-lab era" style="left:${rulerX(VSTART)}">VIIRS</span>`;
+    h += '<button type="button" class="r-hd" id="rFrom" aria-label="Start of the range"></button><button type="button" class="r-hd" id="rTo" aria-label="End of the range"></button><i class="r-now" id="rNow"></i>';
+    r.innerHTML = h;
+    for(const id of ['rFrom', 'rTo']){
+      const hd = $(id);
+      hd.addEventListener('pointerdown', e => { e.preventDefault(); hd.setPointerCapture(e.pointerId); hd.dataset.drag = '1'; });
+      hd.addEventListener('pointermove', e => {
+        if(!hd.dataset.drag) return; const b = r.getBoundingClientRect(), t = clamp(Math.round((e.clientX - b.left)/b.width*T - .5), 0, T-1);
+        if(id === 'rFrom') setRange(Math.min(t, PLAY.to - 1), PLAY.to, 'custom'); else setRange(PLAY.from, Math.max(t, PLAY.from + 1), 'custom');
+      });
+      hd.addEventListener('pointerup', () => { delete hd.dataset.drag; });
+      hd.addEventListener('keydown', e => { const d = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0; if(!d) return; e.preventDefault();
+        if(id === 'rFrom') setRange(Math.min(PLAY.from + d, PLAY.to - 1), PLAY.to, 'custom'); else setRange(PLAY.from, Math.max(PLAY.to + d, PLAY.from + 1), 'custom'); });
+    }
+  }
+  $('rBand').style.left = rulerX(PLAY.from); $('rBand').style.right = `calc(100% - ${rulerX(PLAY.to)})`;
+  $('rFrom').style.left = rulerX(PLAY.from); $('rTo').style.left = rulerX(PLAY.to);
+  $('rFrom').title = `Range starts ${MON[monOf(PLAY.from)]} ${yearOf(PLAY.from)}`; $('rTo').title = `Range ends ${MON[monOf(PLAY.to)]} ${yearOf(PLAY.to)}`;
+  $('rNow').style.left = rulerX(state.t); $('rNow').hidden = !!state.live;
 }
-$('rFrom').onchange = $('rTo').onchange = $('rFromM').onchange = $('rToM').onchange = setRange;
+// playback and fire filter card on the map
+PLAY.to = T - 1;
+for(const id of ['pfM', 'ptM']) MONTHS.forEach((m, i) => $(id).add(new Option(m.slice(0, 3), i)));
+for(const id of ['pfY', 'ptY']) YEARS.forEach(y => $(id).add(new Option(y, y)));
+const putPlay = () => { $('pfM').value = monOf(PLAY.from); $('pfY').value = yearOf(PLAY.from); $('ptM').value = monOf(PLAY.to); $('ptY').value = yearOf(PLAY.to); };
+// one time range drives playback, the calendar's highlighted years and the download years
+function setRange(a, b, preset){
+  a = clamp(a, 0, T-1); b = clamp(b, 0, T-1); if(a > b) [a, b] = [b, a];
+  if(b - a < 1){ if(b < T-1) b = a + 1; else a = b - 1; }
+  PLAY.from = a; PLAY.to = b; putPlay();
+  const yf = String(yearOf(a)), yt = String(yearOf(b));
+  if($('yFrom').value !== yf || $('yTo').value !== yt){ $('yFrom').value = yf; $('yTo').value = yt; if(months){ renderCalendar(); renderYears(); } }
+  document.querySelectorAll('#presets button').forEach(x => x.setAttribute('aria-pressed', x.dataset.preset === preset));
+  renderRuler(); setPlaying(playing);
+}
+const readPlay = () => setRange(tOf(+$('pfY').value, +$('pfM').value), tOf(+$('ptY').value, +$('ptM').value), 'custom');
+$('presets').addEventListener('click', e => { const b = e.target.closest('button'); if(!b) return; const p = b.dataset.preset, ly = yearOf(T-1);
+  if(p === 'all') setRange(0, T-1, 'all'); else if(p === 'custom'){ setRange(PLAY.from, PLAY.to, 'custom'); $('pfM').focus(); }
+  else setRange(tOf(ly - +p + 1, 0), T-1, p); });
+$('tPrev').onclick = () => { setPlaying(false); setT((state.live ? T : state.t) - 1); };
+$('tNext').onclick = () => { setPlaying(false); if(!state.live) setT(state.t + 1); };
+['pfM', 'pfY', 'ptM', 'ptY'].forEach(id => $(id).addEventListener('change', readPlay));
+putPlay(); renderRuler();
+$('speedSeg').addEventListener('click', e => { const b = e.target.closest('button'); if(!b) return; PLAY.speed = +b.dataset.speed;
+  $('speedSeg').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b)); });
+$('pLoop').addEventListener('change', e => { PLAY.loop = e.target.checked; });
+$('dens').addEventListener('input', e => { minDens = DENS[+e.target.value]; $('densV').textContent = minDens <= 1 ? 'all squares' : `${fmt(minDens)} or more`; dirty = true; });
+$('gain').addEventListener('input', e => { fireGain = +e.target.value/100; $('gainV').textContent = e.target.value + ' %'; dirty = true; });
 $('dRange').addEventListener('input', e => { dayPick = +e.target.value - 1; renderTime(); });   // 0 = all days
-$('speed').onchange = e => { speed = +e.target.value; };
 $('tRange').addEventListener('input', e => { setPlaying(false); setT(+e.target.value); });
 $('dlCsv').onclick = downloadCsv; $('dlHot').onclick = downloadDetections; $('dlBrief').onclick = briefing; $('copyLink').onclick = copyLink;
 $('yFrom').onchange = $('yTo').onchange = () => { if(months){ renderCalendar(); renderYears(); } };
@@ -1753,21 +2030,64 @@ $('boxApply').onclick = () => {
 
 const names = COUNTRIES.map((n, i) => [n, i]);
 names.forEach(([n]) => $('places').appendChild(new Option(n)));
+const qr = $('qResults');
+let qHits = [], qActive = -1;
+function searchHits(text){
+  const q = text.trim().toLowerCase(); if(!q) return [];
+  const score = n => { n = n.toLowerCase(); return n === q ? 0 : n.startsWith(q) ? 1 : n.includes(q) ? 2 : -1; };
+  const by = (a, b) => a.s - b.s || a.name.localeCompare(b.name);
+  const cs = names.map(([n, i]) => ({kind:'country', name:n, i, s:score(n)})).filter(h => h.s >= 0).sort(by).slice(0, 6);
+  const ss = [], seen = new Set();
+  for(const v of stateMap.values()){ const sc = score(v.name), k = v.country + '|' + v.name; if(sc < 0 || seen.has(k)) continue; seen.add(k); ss.push({kind:'state', name:v.name, country:v.country, st:v, s:sc}); }
+  return [...cs, ...ss.sort(by).slice(0, 6)];
+}
+function showHits(){
+  qHits = searchHits($('q').value); qActive = qHits.length ? 0 : -1;
+  if(!$('q').value.trim()){ qr.hidden = true; $('q').setAttribute('aria-expanded', 'false'); return; }
+  const group = (kind, title) => { const g = qHits.map((h, i) => [h, i]).filter(([h]) => h.kind === kind); if(!g.length) return '';
+    return `<p class="qr-k">${title}</p>` + g.map(([h, i]) => `<button type="button" role="option" class="qr-it${i === qActive ? ' on' : ''}" data-i="${i}">${esc(h.name)}${h.kind === 'state' ? ` <span>· ${esc(h.country)}</span>` : ''}</button>`).join(''); };
+  qr.innerHTML = (group('country', 'Countries') + group('state', 'States and provinces')) || '<p class="qr-k">No country or loaded state matches.</p>';
+  if(!qHits.some(h => h.kind === 'state')) qr.innerHTML += '<p class="qr-note">States can be searched for countries you have opened or zoomed into. Pick a country first to list all its states.</p>';
+  qr.hidden = false; $('q').setAttribute('aria-expanded', 'true');
+}
+function pickHit(h){
+  qr.hidden = true; $('q').setAttribute('aria-expanded', 'false'); if(!h) return false;
+  if(h.kind === 'country') selectCountry(h.i); else selectState(h.st);
+  return true;
+}
+$('q').addEventListener('input', showHits);
+$('q').addEventListener('focus', () => { if($('q').value.trim() && document.activeElement === $('q')) showHits(); });
+$('q').addEventListener('keydown', e => {
+  if(qr.hidden || !qHits.length) return;
+  if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){ e.preventDefault(); qActive = (qActive + (e.key === 'ArrowDown' ? 1 : qHits.length - 1)) % qHits.length;
+    qr.querySelectorAll('.qr-it').forEach(b => b.classList.toggle('on', +b.dataset.i === qActive)); }
+  else if(e.key === 'Escape'){ qr.hidden = true; }
+});
+qr.addEventListener('pointerdown', e => e.preventDefault());   // keep focus in the field while choosing
+qr.addEventListener('click', e => { const b = e.target.closest('.qr-it'); if(b) pickHit(qHits[+b.dataset.i]); });
+$('q').addEventListener('blur', () => { qr.hidden = true; $('q').setAttribute('aria-expanded', 'false'); });
 $('searchForm').addEventListener('submit', e => {
   e.preventDefault();
-  const q = $('q').value.trim().toLowerCase(); if(!q) return;
-  const hit = names.find(n => n[0].toLowerCase() === q) || names.find(n => n[0].toLowerCase().startsWith(q)) || names.find(n => n[0].toLowerCase().includes(q));
-  if(hit) selectCountry(hit[1]); else toast(`No country matches "${$('q').value.trim()}".`);
+  if(!$('q').value.trim()) return;
+  if(!qHits.length) qHits = searchHits($('q').value);
+  if(!pickHit(qHits[Math.max(0, qActive)])) toast(`No country or loaded state matches "${$('q').value.trim()}".`);
 });
+const chip = (label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'chip'; b.textContent = label; b.onclick = fn; $('chips').appendChild(b); };
+['Mexico','Brazil','Zambia','Indonesia','Australia','Canada'].forEach(n => { const hit = names.find(x => x[0] === n); if(hit) chip(n, () => selectCountry(hit[1])); });
+chip('Chihuahua (box)', () => { $('area').open = true; selectBox({n:32, s:25.5, w:-109, e:-103}, 'Chihuahua, Mexico (box)'); });
+// quick places in the top bar for Presentation
+const quick = (label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'chip'; b.textContent = label; b.onclick = fn; $('quick').appendChild(b); };
+quick('Whole planet', () => $('wholeBtn').click());
+['Mexico', 'Brazil', 'Australia'].forEach(n => { const hit = names.find(x => x[0] === n); if(hit) quick(n, () => selectCountry(hit[1])); });
+// display: borders, names, reset
+$('optStates').addEventListener('change', e => { disp.states = e.target.checked; bump(); });
+$('optPlaces').addEventListener('change', e => { disp.places = e.target.checked; bump(); });
+$('resetDisp').onclick = () => {
+  setGlobeLook('standard'); setView('count');
+  for(const [id, v] of [['dens', 0], ['gain', 100]]){ $(id).value = v; $(id).dispatchEvent(new Event('input')); }
+  for(const id of ['optStates', 'optPlaces']){ $(id).checked = true; $(id).dispatchEvent(new Event('change')); }
+};
 
-// On phones steps 3 and 4 and the definition move into "More options", so the map is closer to the top
-const phone = matchMedia('(max-width: 759.98px)'), moreOpts = $('moreOpts');
-function placeOpts(){
-  if(phone.matches){ [$('stepShow'), $('stepOnly'), $('foot')].forEach(el => moreOpts.appendChild(el)); }
-  else { moreOpts.before($('stepShow'), $('stepOnly')); $('ask').appendChild($('foot')); }
-  moreOpts.hidden = !phone.matches;
-}
-phone.addEventListener('change', placeOpts); placeOpts();
 addEventListener('hashchange', () => { if(location.hash !== ownHash) restore(); });   // a pasted link; our own writes use replaceState
 
 $('wLive').hidden = !HAS.live;
@@ -1775,7 +2095,7 @@ $('strongWrap').hidden = !HAS.live;
 $('cViirs').hidden = !UNITS.includes('viirs');
 $('hViirs').textContent = UNIT.viirs.help; $('hAqua').textContent = UNIT.aqua.help;
 useUnit(); syncTimeControls(); legend(); loadPB(); loadTrust();
-resize(); setPlaying(false); renderTime();
+resize(); if(pageQ.get('flat') === '1' || lookStore.get2('fp-flat') === '1') setFlat(true, false); setPlaying(false); renderTime();
 requestAnimationFrame(tick);
-if(!(await restore())) select({kind:'world', name:'Earth'}, null).then(() => { spin = !reduced; });
+if(!(await restore())) select({kind:'world', name:'Earth'}, null);
 })();
