@@ -904,7 +904,7 @@ function drawPB(g){
 }
 
 /* ---------- a past month at the closest zoom: its single detections, asked for by view (layout in app.py, /api/points.bin) ---------- */
-let MP = null, mpWant = '', mpBusy = '', mpHold = 0, mpOff = !HAS.points;
+let MP = null, mpWant = '', mpBusy = '', mpHold = 0, mpMs = 0, mpOff = !HAS.points;   // mpMs: how long a day takes to arrive, smoothed
 const mpDays = new Map(), mpAsk = new Map();   // the last 12 days loaded and the requests in flight, by month|day|box
 const mpOn = () => !mpOff && !playing && isFlat() && PC.k*0.05*RAD >= 12;   // a square of 5 km is at least 12 px wide
 const dayOn = () => state.day > 0 && !state.live && !mpOff;   // one day of the record: its raw detections at every zoom
@@ -918,7 +918,7 @@ function fetchMP(m, dd, box){   // -> promise of the detections of one month, or
   if(mpDays.has(key)) return Promise.resolve(mpDays.get(key));
   if(mpAsk.has(key)) return mpAsk.get(key);
   if(performance.now() < mpHold) return Promise.reject(new Error('wait'));   // the last request failed: no new one for 3 s
-  const p = fetch(`api/points.bin?month=${m}&bbox=${box}${dd ? '&day=' + dd : ''}`)
+  const sent = performance.now(), p = fetch(`api/points.bin?month=${m}&bbox=${box}${dd ? '&day=' + dd : ''}`)
     .then(r => { if(!r.ok){ const x = new Error(r.status); x.status = r.status; throw x; } return r.arrayBuffer(); })
     .then(buf => {
       const hl = new DataView(buf).getUint32(0, true), h = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl))), n = h.n;
@@ -928,7 +928,7 @@ function fetchMP(m, dd, box){   // -> promise of the detections of one month, or
       const vx = new Float32Array(n), vy = new Float32Array(n), vz = new Float32Array(n);
       for(let i=0;i<n;i++){ const v = unitOf(lon[i], lat[i]); vx[i] = v[0]; vy[i] = v[1]; vz[i] = v[2]; }
       const o = {h, m, d:dd, box, n, frp, minute, day, flags, vx, vy, vz};
-      if(dd){ mpDays.set(key, o); if(mpDays.size > 12) mpDays.delete(mpDays.keys().next().value); }   // days are kept: Play and stepping back show them at once
+      if(dd){ const ms = performance.now() - sent; mpMs = mpMs ? .7*mpMs + .3*ms : ms; mpDays.set(key, o); if(mpDays.size > 12) mpDays.delete(mpDays.keys().next().value); }   // days are kept: Play and stepping back show them at once
       return o;
     })
     .catch(err => { if(err.status !== 404) mpHold = performance.now() + 3000; throw err; })
@@ -1106,13 +1106,15 @@ function tick(now){
   } else if(spin && !dragging && !drawMode){
     const r = projection.rotate(); projection.rotate([r[0] + dt*0.004, r[1]]); dirty = true;
   }
-  if(playing && dayOn()){ playAcc += dt; if(playAcc > 110/PLAY.speed && mpReady()){   // one day per step. The next days are asked ahead, and the day on screen stays until the next one is in.
-    const nx = dayAfter(state.t, state.day);
-    if(!nx) setPlaying(false);
+  // One day per step, at an even pace: 0.7 s a day at 1x, or slower when the server needs longer (two days are asked at a time, so a day arrives about every mpMs/2).
+  // The next days are asked ahead, and the day on screen stays until the next one is in.
+  if(playing && dayOn()){ playAcc += dt; if(mpReady()){
+    const nx = dayAfter(state.t, state.day), due = playAcc > Math.max(700/PLAY.speed, .6*mpMs);
+    if(!nx){ if(due) setPlaying(false); }
     else {
       const o = mpDays.get(`${ymOf(nx[0])}|${nx[1]}|${MP.box}`);
-      if(o){ playAcc = 0; MP = o; mpWant = ''; state.day = nx[1]; setT(nx[0]); }
-      for(let a = o ? dayAfter(nx[0], nx[1]) : nx, i = 0; a && i < 2; a = dayAfter(a[0], a[1]), i++)
+      if(o && due){ playAcc = 0; MP = o; mpWant = ''; state.day = nx[1]; setT(nx[0]); }
+      else for(let a = nx, i = 0; a && i < 2; a = dayAfter(a[0], a[1]), i++)   // every frame, but each day is asked once: fetchMP keeps the requests in flight
         fetchMP(ymOf(a[0]), a[1], MP.box).catch(err => { if(err.status === 404 && playing){ setPlaying(false); toast('No single detections for the next month.'); } });
     } } }
   else if(playing){ playAcc += dt; if(playAcc > 110/PLAY.speed){ playAcc = 0; if(state.t >= PLAY.to){ if(PLAY.loop) setT(PLAY.from); else setPlaying(false); } else setT(state.t + 1); } }
