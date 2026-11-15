@@ -507,7 +507,7 @@ function drawBase(g, pth, full, under){
       s.addColorStop(0, 'rgba(0,0,0,0)'); s.addColorStop(1, 'rgba(0,0,0,.5)');
       g.globalAlpha = round; g.fillStyle = s; g.beginPath(); g.arc(cx, cy, k, 0, 7); g.fill(); g.globalAlpha = 1;
     }
-    if(disp.places && full && alpha > 0.9 && viewPlaces && viewPlaces.length){   // names of the largest places in view, skipping overlaps
+    if(disp.places && full && alpha > 0.9 && k > 150 && viewPlaces && viewPlaces.length){   // not on a phone-size whole world: the names would cover it   // names of the largest places in view, skipping overlaps
       g.font = '11px "Source Sans 3", system-ui, sans-serif'; g.textBaseline = 'middle'; g.lineJoin = 'round';
       const boxes = [];
       for(const p of viewPlaces){
@@ -950,7 +950,7 @@ function drawMP(g, moving){   // each detection as a square of its pixel size on
     }
     g.globalCompositeOperation = 'source-over'; g.globalAlpha = .9;
     for(let c=0;c<3;c++){
-      const r = [1.8, 2.5, 3.3][c]*clamp(PC.k/1200, .45, 1); g.fillStyle = PTC[c]; g.beginPath();   // smaller on the whole world: a day has over 100,000 dots
+      const r = [1.8, 2.5, 3.3][c]*clamp(PC.k/700, .25, 1); g.fillStyle = PTC[c]; g.beginPath();   // smaller on the whole world: a day has over 100,000 dots
       for(let j=0;j<nQ;j++){ if(cls[j] !== c) continue; const q = Math.max(r, (wide[d.flags[qI[j]] >> 1] ? s1k : s375)/2); if(q < 2) g.rect(qX[j] - q, qY[j] - q, 2*q, 2*q); else { g.moveTo(qX[j] + q, qY[j]); g.arc(qX[j], qY[j], q, 0, 7); } }   // tiny dots as squares: far cheaper to fill
       g.fill();
     }

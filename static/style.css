@@ -443,3 +443,36 @@ dialog a{color:var(--fg)}
   .app.mode-pres .search{flex:0 1 480px}
   .app.mode-pres .mode-toggle{flex:1 1 0;justify-content:flex-end}
 }
+
+.dsel{display:flex;gap:4px}
+
+/* ---------- phone ----------
+   The time bar wraps into rows that fit the screen (it used to be wider than the screen, which shrank the whole page).
+   Presentation is one screen: the map takes the height that is left. The count card is a strip under the map controls. */
+@media (max-width:899.98px){
+  .app{gap:8px 0;padding-left:max(10px,env(safe-area-inset-left,0px));padding-right:max(10px,env(safe-area-inset-right,0px))}
+  .bar{padding:8px 0;gap:6px 10px}
+  .app.mode-pres{height:100dvh;grid-template-rows:auto minmax(0,1fr);padding-bottom:8px}
+  .app.mode-pres .mid{grid-template-rows:minmax(0,1fr) auto;gap:8px}
+  .app.mode-pres .globe{aspect-ratio:auto;max-height:none;min-height:200px}
+
+  .dock{display:flex;flex-wrap:wrap;align-items:center;gap:6px 6px;padding:0}
+  .ctl{display:contents}
+  .when{order:1;flex:1 1 0;min-width:0;padding-left:6px}
+  .when .readout{font-size:17px;overflow:hidden;text-overflow:ellipsis}
+  .when #sensorNow{white-space:normal;line-height:1.25}
+  .dsel{order:2;flex:1 0 100%;gap:6px}
+  .dsel select{flex:1 1 0;min-width:0}
+  .ruler-wrap{order:3;flex:1 0 100%;height:40px}
+  .dock-r{order:4;flex:1 0 100%;justify-content:space-between;gap:8px}
+
+  .gizmo-toggle{display:none}
+  .legend{top:8px;right:8px;bottom:auto;left:auto;max-width:calc(100% - 160px);font-size:11px;padding:4px 7px;gap:3px 6px}
+  .look-seg{top:8px;left:8px} .flat-sw{top:42px;left:8px} .world-btn{top:78px;left:8px;min-height:30px;font-size:13px}
+  .mcard{left:8px;right:8px;bottom:8px;width:auto;min-width:0;padding:7px 10px;display:grid;grid-template-columns:minmax(0,45%) minmax(0,1fr);column-gap:12px;align-items:center}
+  .mc-k{grid-column:1 / -1}
+  .mc-big{grid-area:2 / 1;font-size:24px;margin:0}
+  .mc-gauge{grid-area:2 / 2;margin:0}
+  .mc-unit{grid-area:3 / 1;font-size:11px;line-height:1.25}
+  .mc-line{grid-area:3 / 2;margin:0;font-size:13px;line-height:1.25}
+}
