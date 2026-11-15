@@ -393,6 +393,25 @@ function drawTexture(g, moving){
   if(!texBuf) texBuf = texG.createImageData(w, h);
   const out = texBuf.data, src = TEX.data, tw = TEX.w, th = TEX.h, P = PC, a = alpha, lit = 1 - a, ymax = (1 - a) + a*Math.PI/2;
   out.fill(0);
+  if(a > 0.9999){   // flat: x is longitude and y is latitude, nothing to solve. With north up, every column and row of the screen is one column and row of the texture
+    const lmax = flatMap ? Math.PI : Math.PI/2, sl = new Float32Array(w), cl = new Float32Array(w), ok = new Uint8Array(w), cu = new Int32Array(w);
+    const level = Math.abs(P.cZ) < 1e-9, l0 = Math.atan2(P.cY, P.cX);
+    for(let i=0;i<w;i++){ const l = ((i + .5)/q - P.cx)/P.k; ok[i] = Math.abs(l) <= lmax ? 1 : 0; sl[i] = Math.sin(l); cl[i] = Math.cos(l);
+      if(level){ let u = (((l0 + l)/Math.PI + 1)/2) % 1; if(u < 0) u += 1; cu[i] = Math.min(tw - 1, (u*tw) | 0); } }
+    for(let j=0;j<h;j++){
+      const p = (P.cy - (j + .5)/q)/P.k; if(!(Math.abs(p) < Math.PI/2)) continue;
+      const sp = Math.sin(p), cp = Math.cos(p), row = Math.min(th - 1, ((0.5 - p/Math.PI)*th) | 0)*tw;
+      for(let i=0, o=j*w*4;i<w;i++, o+=4){
+        if(!ok[i]) continue;
+        let si;
+        if(level) si = (row + cu[i])*4;
+        else { const X = cp*sl[i], Z = cp*cl[i], vx = X*P.eX + sp*P.nX + Z*P.cX, vy = X*P.eY + sp*P.nY + Z*P.cY, vz = sp*P.nZ + Z*P.cZ;
+          const u = ((Math.atan2(vy, vx)/Math.PI + 1)/2*tw) | 0, v = ((0.5 - Math.asin(vz > 1 ? 1 : vz < -1 ? -1 : vz)/Math.PI)*th) | 0;
+          si = ((v >= th ? th - 1 : v)*tw + (u >= tw ? tw - 1 : u))*4; }
+        out[o] = src[si] >> 1; out[o + 1] = src[si + 1] >> 1; out[o + 2] = src[si + 2] >> 1; out[o + 3] = 255;   // the flat map is unlit at half brightness
+      }
+    }
+  } else
   for(let j=0;j<h;j++){
     const yr = (P.cy - (j + .5)/q)/P.k;
     let sp = 0, cp = 1;
@@ -915,14 +934,15 @@ function loadMP(vb){   // on still frames: one request for the view and a margin
       else { mpOff = true; legend(); } });   // this data folder has no detection files
 }
 const SATN = {Terra:'Terra, 1 km pixel', Aqua:'Aqua, 1 km pixel', SNPP:'Suomi NPP, 375 m pixel', N20:'NOAA-20, 375 m pixel'};
-function drawMP(g){   // each detection as a square of its pixel size on the ground, at least 2.5 px
+function drawMP(g, moving){   // each detection as a square of its pixel size on the ground, at least 2.5 px
   const d = MP, tm = state.harm ? mParam().time : null, wide = d.h.sats.map(s => s === 'Terra' || s === 'Aqua');
   const s375 = Math.max(2.5, PC.k*RAD*0.375/111.2), s1k = Math.max(2.5, PC.k*RAD/111.2);
   if(qX.length < d.n){ qX = new Float32Array(d.n); qY = new Float32Array(d.n); qI = new Int32Array(d.n); }
   nQ = 0; l1Shown = {kind:'mp'};
   if(d.d){   // one day: dots like one day of the last 7 days (drawPB), never smaller than the pixel on the ground
     const smw = pbStrong() || 50, ot = state.time === 'all' ? null : state.time, cls = new Uint8Array(d.n);
-    for(let i=0;i<d.n;i++){
+    const n = moving ? Math.min(d.n, 40000) : d.n;   // strongest first: a moving map draws the strongest 40,000 only
+    for(let i=0;i<n;i++){
       const f = d.flags[i]; if(ot && (ot === 'night') !== !!(f & 1)) continue;
       if(state.strong && !(d.frp[i] >= smw)) continue;
       if(!projU(d.vx[i], d.vy[i], d.vz[i], 6)) continue;
@@ -931,7 +951,7 @@ function drawMP(g){   // each detection as a square of its pixel size on the gro
     g.globalCompositeOperation = 'source-over'; g.globalAlpha = .9;
     for(let c=0;c<3;c++){
       const r = [1.8, 2.5, 3.3][c]*clamp(PC.k/1200, .45, 1); g.fillStyle = PTC[c]; g.beginPath();   // smaller on the whole world: a day has over 100,000 dots
-      for(let j=0;j<nQ;j++){ if(cls[j] !== c) continue; const q = Math.max(r, (wide[d.flags[qI[j]] >> 1] ? s1k : s375)/2); g.moveTo(qX[j] + q, qY[j]); g.arc(qX[j], qY[j], q, 0, 7); }
+      for(let j=0;j<nQ;j++){ if(cls[j] !== c) continue; const q = Math.max(r, (wide[d.flags[qI[j]] >> 1] ? s1k : s375)/2); if(q < 2) g.rect(qX[j] - q, qY[j] - q, 2*q, 2*q); else { g.moveTo(qX[j] + q, qY[j]); g.arc(qX[j], qY[j], q, 0, 7); } }   // tiny dots as squares: far cheaper to fill
       g.fill();
     }
     qSide = Math.max(6, s1k/2); return;
@@ -952,7 +972,7 @@ function drawFire(g, moving, now){
   const flat = isFlat(), vb = flat ? viewBounds(0.1) : null, glow = alpha < 0.5 && !moving && LOOK[globeLook].glow;
   let lv = 0;
   if(state.live && PB && (zoom >= 1.8 || dayPick >= 0)){ drawPB(g); lv = 4; }   // one day has no 0.5 degree grid: single detections at every zoom
-  else if(dayOn()){ if(!moving || !mpReady()) loadMP(dayBox()); if(mpReady()){ drawMP(g); lv = 5; } }   // one day of the record: no monthly squares
+  else if(dayOn()){ if(!moving || !mpReady()) loadMP(dayBox()); if(mpReady()){ drawMP(g, moving); lv = 5; } }   // one day of the record: no monthly squares
   else if(!state.live && state.view !== 'trust' && !tilesOff){
     lv = tileLv = levelFor(PC.k, true);
     const pts = lv === 3 && mpOn();
@@ -982,7 +1002,7 @@ function drawFire(g, moving, now){
 
 /* ---------- one frame ---------- */
 const PERF = new URLSearchParams(location.search).get('perf') === '1', frameMs = [];
-let perfN = 0;
+let perfN = 0, partMs = [0, 0];
 const perfBox = PERF ? Object.assign(document.createElement('p'), {className:'perf'}) : null;
 if(perfBox) wrap.appendChild(perfBox);
 const isMoving = now => !!fly || !!pinch || !!(dragging && dragging.moved) || now - lastWheel < 140 || (spin && !dragging && !drawMode);
@@ -1012,7 +1032,9 @@ function draw(now = performance.now()){
     ctx.setTransform(dpr*s, 0, 0, dpr*s, dpr*(p[0] - s*W/2), dpr*(p[1] - s*H/2)); ctx.drawImage(baseC, 0, 0, W, H);
     baseMode = 'transform';
   } else { drawBase(ctx, path, false, false); baseMode = 'direct 110m'; }
+  const t1 = performance.now();
   drawFire(ctx, moving, now);
+  if(PERF) partMs = [t1 - t0, performance.now() - t1];
   const home = state.sel.kind === 'world' && zoom <= (flatMap ? flatFit()*1.05 : 1.2); if($('worldBtn').hidden !== home) $('worldBtn').hidden = home;   // the way back, whenever you are not looking at the whole planet
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.setLineDash([5, 4]); ctx.strokeStyle = C.accent; ctx.lineWidth = 1.5;
@@ -1023,7 +1045,7 @@ function draw(now = performance.now()){
   frameMs.push(performance.now() - t0); if(frameMs.length > 60) frameMs.shift();
   if(perfBox && ++perfN % 10 === 0){
     const s = frameMs.slice().sort((a, b) => a - b);
-    perfBox.textContent = `median ${s[s.length >> 1].toFixed(1)} ms, worst ${s.at(-1).toFixed(1)} ms\nbase: ${baseMode}, fire level ${fireLevel === 4 ? 'dots' : fireLevel}
+    perfBox.textContent = `median ${s[s.length >> 1].toFixed(1)} ms, worst ${s.at(-1).toFixed(1)} ms\nbase ${partMs[0].toFixed(0)} ms, fire ${partMs[1].toFixed(0)} ms, ${baseMode}, fire level ${fireLevel === 4 ? 'dots' : fireLevel}
 tiles ${tileStat[0]} loaded, ${tileStat[1]} waiting, ${tsFlight} in flight, ${(tsBytes/1e6).toFixed(0)} MB`;
   }
 }
