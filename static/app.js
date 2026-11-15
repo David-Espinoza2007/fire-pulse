@@ -391,7 +391,9 @@ const LIGHT = (() => { const v = [-0.5, 0.55, 0.67], n = Math.hypot(...v); retur
 function drawTexture(g, moving){
   if(TEX.state !== 'ready'){ loadTexture(); return false; }
   // not finer than the texture's own pixels: zoomed in, a finer buffer only repeats each texture pixel as a block; a coarser one is scaled up smoothly below
-  const budget = moving ? 120000 : 700000, q = Math.min(dpr, Math.sqrt(budget/(W*H)), Math.max(0.03, TEX.w/(2*Math.PI*PC.k)));
+  // the budget counts the pixels the Earth covers, not the empty sky around the globe: the same work gives a sharper moving globe
+  const budget = moving ? 120000 : 700000, cover = Math.min(W*H, alpha < .5 ? Math.PI*PC.k*PC.k : 2*Math.PI*PC.k*Math.PI*PC.k);
+  const q = Math.min(dpr, Math.sqrt(budget/cover), Math.max(0.03, TEX.w/(2*Math.PI*PC.k)));
   const w = Math.max(1, Math.round(W*q)), h = Math.max(1, Math.round(H*q));
   if(texC.width !== w || texC.height !== h){ texC.width = w; texC.height = h; texBuf = null; }
   if(!texBuf) texBuf = texG.createImageData(w, h);
@@ -557,7 +559,7 @@ function sqPush(x, y, s, b, v, l, u){
 const onLand = () => !!LOOK[globeLook].texture;
 const fireOp = () => onLand() ? 'source-over' : 'lighter';
 const fireCol = q => lut(seqLUT, onLand() ? 0.45 + 0.55*q : 0.2 + 0.7*q);
-const fireA = q => Math.min(1, (onLand() ? 0.2 + 0.75*q : 0.3 + 0.45*q)*fireGain);
+const fireA = q => Math.min(1, (onLand() ? 0.2 + 0.6*q : 0.3 + 0.45*q)*fireGain);
 function sqFlush(g, from, to, count, a, glow){   // counting sort by bucket, then one path per bucket
   if(to <= from || a <= 0) return;
   sqCount.fill(0);
@@ -829,7 +831,41 @@ function tileSquares(e, L, tb, box, vb){   // push the squares of one tile for t
     sqPush(PX[0], PX[1], side, Math.min(NB-1, Math.floor(anomU(r)*NB)), r, L, -1);
   }
 }
-function fallbackSquares(L, box, vb){   // best data already in memory for a tile that is not here yet: a coarser tile, else level 0
+/* A quick first answer while tiles are on their way. A tile holds every month of its area: up to 5 MB where much burns (Africa),
+   so on a slow line the detail took 10 to 30 s. api/cells sends the selected month only, for the view, summed to the level's cell. */
+let BR = null, brWant = '', brOff = false;
+const brBase = L => `${ymOf(state.t)}|${state.unit}|${mParam().time || 'all'}|${state.harm ? 'h' : 'r'}|${L}`;
+function loadBridge(L, vb){   // on still frames, when a tile of the view is missing
+  const bw = vb ? vb[2] - vb[0] : 999, bh = vb ? vb[3] - vb[1] : 999;
+  if(brOff || state.view === 'anom' || bw > 69 || bh > 44) return;   // the API allows 70 by 45 degrees
+  const base = brBase(L);
+  if(BR && BR.base === base && vb[0] >= BR.box[0] && vb[1] >= BR.box[1] && vb[2] <= BR.box[2] && vb[3] <= BR.box[3]) return;
+  const dx = Math.min(bw/4, (69.9 - bw)/2), dy = Math.min(bh/4, (44.9 - bh)/2);   // a margin for small moves, as far as the API allows
+  const box = [Math.max(-180, vb[0] - dx), Math.max(-90, vb[1] - dy), Math.min(180, vb[2] + dx), Math.min(90, vb[3] + dy)].map(v => +v.toFixed(2));
+  const key = base + '|' + box; if(key === brWant) return;
+  brWant = key;
+  api('api/cells?' + new URLSearchParams({bbox:box.join(','), month:ymOf(state.t), ...mParam(), res:TL[L].f})).then(r => {
+    if(brWant !== key) return;
+    const cells = Array.isArray(r.cells) ? r.cells : [], n = cells.length, res = +r.res, harm = state.harm;
+    const d = {base, box, L, n, lon:new Float32Array(n), lat:new Float32Array(n), v:new Float32Array(n), ux:new Float32Array(n), uy:new Float32Array(n), uz:new Float32Array(n)};
+    cells.forEach((c, i) => { d.lon[i] = (c[0] + .5)*res; d.lat[i] = (c[1] + .5)*res; d.v[i] = +(harm ? c[2] : c[3]) || 0;
+      const u = unitOf(d.lon[i], d.lat[i]); d.ux[i] = u[0]; d.uy[i] = u[1]; d.uz[i] = u[2]; });
+    BR = d; dirty = true;
+  }).catch(err => { if(err.status === 404 || err.status === 422) brOff = true; });   // an older server: tiles only, as before
+}
+function bridgeSquares(L, box, vb){   // the squares of the quick answer inside one missing tile; false when it does not reach this tile
+  const d = BR; if(!d || d.base !== brBase(L) || state.view === 'anom' || !hits(d.box, box)) return false;
+  const c = TL[L], f100 = 100/c.n, side = Math.max(1.2, PC.k*c.cell*RAD);
+  for(let i=0;i<d.n;i++){
+    const lo = d.lon[i], la = d.lat[i]; if(lo < box[0] || lo >= box[2] || la < box[1] || la >= box[3]) continue;
+    const v = d.v[i]; if(v <= 0 || v*f100 < minDens) continue;
+    if(!projU(d.ux[i], d.uy[i], d.uz[i], side)) continue;
+    sqPush(PX[0], PX[1], side, Math.min(NB-1, Math.floor(Math.sqrt(Math.min(1, v*f100/VMAX))*NB)), v, L, -1);
+  }
+  return true;
+}
+function fallbackSquares(L, box, vb){   // best data already in memory for a tile that is not here yet: the quick answer, a coarser tile, else level 0
+  if(bridgeSquares(L, box, vb)) return;
   for(let M=L-1;M>=1;M--){
     const cover = tilesIn(M, box).filter(it => hits(it.b, box) && it.b[0] < box[2] && it.b[2] > box[0] && it.b[1] < box[3] && it.b[3] > box[1]);
     if(cover.length && cover.every(it => { const e = TS.get(it.key); return e && (e.state === 'ok' || e.state === 'empty'); })){
@@ -1006,7 +1042,7 @@ function drawFire(g, moving, now){
     if(pts && !moving) loadMP(tileView());
     const mp = pts && mpReady();
     if(lv === 0){ cells0(vb, null); sqFlush(g, 0, SQ.n, state.view !== 'anom', 1, glow); tileStat = [0, 0]; }
-    else drawTiles(g, lv, now, mp ? 0.45 : 1);
+    else { drawTiles(g, lv, now, mp ? 0.45 : 1); if(!moving && tileStat[1] > 0) loadBridge(lv, tileView()); }
     if(mp){ drawMP(g); lv = 5; }
   } else {
     // without tiles or the week file: level 0, and the per-view level 1 once the view has settled (as before)

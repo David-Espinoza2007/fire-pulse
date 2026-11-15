@@ -160,6 +160,13 @@ def test_fine_cells(client):
     assert c.get("/api/cells", params={"bbox": "-120,10,-40,30", "month": month}).json() == {"detail": "Zoom in to see fine detail"}
     assert c.get("/api/cells", params={"bbox": "-120,-20,-100,30", "month": month}).status_code == 422
     assert c.get("/api/cells", params={"bbox": box, "month": "2019-13"}).status_code == 422
+    for res in (2, 5):   # summed to the cells of the coarser tile levels: the same total (the box edges are multiples of 0.25), fewer cells
+        g = c.get("/api/cells", params={"bbox": box, "month": month, "res": res}).json()
+        assert g["res"] == pytest.approx(0.05 * res) and 0 < len(g["cells"]) < len(r["cells"])
+        assert sum(x[2] for x in g["cells"]) == pytest.approx(sum(x[2] for x in r["cells"]), abs=0.05 * len(r["cells"]) + 0.5)
+        assert sum(x[3] for x in g["cells"]) == sum(x[3] for x in r["cells"])
+    assert c.get("/api/cells", params={"bbox": box, "month": month, "res": 3}).status_code == 422
+    assert c.get("/api/cells", params={"bbox": box, "month": month, "res": 5, "normal": 1}).status_code == 422
 
 
 def test_cache_headers(client):

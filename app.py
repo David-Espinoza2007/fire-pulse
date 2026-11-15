@@ -662,8 +662,11 @@ MAX_CELLS = 60000
 
 
 @app.get("/api/cells")
-def fine_cells(bbox: str, month: str, time: str = "all", normal: int = Query(0, ge=0, le=1), unit: str | None = None):
-    """0.05 degree cells of the box for one month: [cell_x, cell_y, value in the unit, raw(, normal)]."""
+def fine_cells(bbox: str, month: str, time: str = "all", normal: int = Query(0, ge=0, le=1), unit: str | None = None, res: int = 1):
+    """0.05 degree cells of the box for one month: [cell_x, cell_y, value in the unit, raw(, normal)].
+    res 2 or 5 sums them to cells of 0.1 or 0.25 degrees (the cells of the tile levels); not with normal."""
+    if res not in (1, 2, 5) or (res > 1 and normal):
+        raise HTTPException(422, "res must be 1, 2 or 5, and 1 with normal")
     w, s_, e, n = parse_bbox(bbox)
     if e - w > 70 or n - s_ > 45:
         raise HTTPException(422, "Zoom in to see fine detail")
@@ -675,7 +678,13 @@ def fine_cells(bbox: str, month: str, time: str = "all", normal: int = Query(0, 
     box = "cell_y BETWEEN ? AND ? AND cell_x BETWEEN ? AND ?"   # integer ranges let Parquet skip row groups
     bp = [math.floor(s_ / H.CELL), math.ceil(n / H.CELL) - 1, math.floor(w / H.CELL), math.ceil(e / H.CELL) - 1]
     raw = "raw_terra + raw_aqua + raw_n20 + raw_snpp"
-    if normal:
+    if res > 1:   # whole coarse cells: widen the box to their edges
+        bp = [bp[0] // res * res, bp[1] // res * res + res - 1, bp[2] // res * res, bp[3] // res * res + res - 1]
+        sql = f"""SELECT CAST(floor(cell_x / {res}.0) AS INTEGER), CAST(floor(cell_y / {res}.0) AS INTEGER), round(sum({v}), 1), CAST(sum({raw}) AS BIGINT)
+                  FROM monthly WHERE {box} AND month = ? GROUP BY 1, 2 HAVING sum({v}) > 0 OR sum({raw}) > 0
+                  ORDER BY 3 DESC, 4 DESC LIMIT {MAX_CELLS + 1}"""
+        params = bp + [day]
+    elif normal:
         a, b = U["base"]
         k = b - a + 1
         at = lambda p: f"CASE WHEN {p} <= {k} - len(l) THEN 0 ELSE l[{p} - ({k} - len(l))] END"
@@ -693,7 +702,7 @@ def fine_cells(bbox: str, month: str, time: str = "all", normal: int = Query(0, 
                   WHERE {box} AND month = ? AND ({v} > 0 OR {raw} > 0) ORDER BY 3 DESC, 4 DESC LIMIT {MAX_CELLS + 1}"""
         params = bp + [day]
     rows = db.cursor().execute(sql, params).fetchall()
-    return {"res": H.CELL, "month": month, "time": time, "unit": unit, "truncated": len(rows) > MAX_CELLS,
+    return {"res": round(H.CELL * res, 2), "month": month, "time": time, "unit": unit, "truncated": len(rows) > MAX_CELLS,
             "cells": [list(r) for r in rows[:MAX_CELLS]]}
 
 
