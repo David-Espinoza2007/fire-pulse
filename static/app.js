@@ -836,11 +836,11 @@ function tileSquares(e, L, tb, box, vb){   // push the squares of one tile for t
 let BR = null, brWant = '', brOff = false;
 const brBase = L => `${ymOf(state.t)}|${state.unit}|${mParam().time || 'all'}|${state.harm ? 'h' : 'r'}|${L}`;
 function loadBridge(L, vb){   // on still frames, when a tile of the view is missing
-  const bw = vb ? vb[2] - vb[0] : 999, bh = vb ? vb[3] - vb[1] : 999;
-  if(brOff || state.view === 'anom' || bw > 69 || bh > 44) return;   // the API allows 70 by 45 degrees
+  const bw = vb ? vb[2] - vb[0] : 999, bh = vb ? vb[3] - vb[1] : 999, mw = 70*TL[L].f, mh = 45*TL[L].f;   // the API allows 70 by 45 degrees of the finest cells, more of the coarser ones
+  if(brOff || state.view === 'anom' || bw > mw - 1 || bh > mh - 1) return;
   const base = brBase(L);
   if(BR && BR.base === base && vb[0] >= BR.box[0] && vb[1] >= BR.box[1] && vb[2] <= BR.box[2] && vb[3] <= BR.box[3]) return;
-  const dx = Math.min(bw/4, (69.9 - bw)/2), dy = Math.min(bh/4, (44.9 - bh)/2);   // a margin for small moves, as far as the API allows
+  const dx = Math.min(bw/4, (mw - .1 - bw)/2), dy = Math.min(bh/4, (mh - .1 - bh)/2);   // a margin for small moves, as far as the API allows
   const box = [Math.max(-180, vb[0] - dx), Math.max(-90, vb[1] - dy), Math.min(180, vb[2] + dx), Math.min(90, vb[3] + dy)].map(v => +v.toFixed(2));
   const key = base + '|' + box; if(key === brWant) return;
   brWant = key;

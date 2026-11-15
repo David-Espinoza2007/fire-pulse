@@ -668,7 +668,7 @@ def fine_cells(bbox: str, month: str, time: str = "all", normal: int = Query(0, 
     if res not in (1, 2, 5) or (res > 1 and normal):
         raise HTTPException(422, "res must be 1, 2 or 5, and 1 with normal")
     w, s_, e, n = parse_bbox(bbox)
-    if e - w > 70 or n - s_ > 45:
+    if e - w > 70 * res or n - s_ > 45 * res:   # coarser cells: a wider box holds as many of them
         raise HTTPException(422, "Zoom in to see fine detail")
     day = parse_month(month, "month")
     unit, U = parse_unit(unit)
