@@ -68,6 +68,7 @@ if __name__ == "__main__":
         tmp = Path(tmp)
         for name in CODE:
             (shutil.copytree if (HERE / name).is_dir() else shutil.copy)(HERE / name, tmp / name)
+        (tmp / "Dockerfile").write_bytes((HERE / "Dockerfile").read_bytes().replace(b"\r\n", b"\n"))   # a Windows checkout has CRLF; the Linux build needs LF
         (tmp / "README.md").write_text(CARD, encoding="utf-8")
         (tmp / "DATA_REPO").write_text(f"{data_id}@{commit}\n")
         api.upload_folder(repo_id=space_id, repo_type="space", folder_path=tmp, delete_patterns="*", commit_message="Fire Pulse")
