@@ -1,4 +1,4 @@
-/* blazeBridge. The look and the globe come from the team's first prototype (fire-pulse). The numbers come
+/* FirePulse. The look and the globe come from the team's first prototype (fire-pulse). The numbers come
    from the API in app.py, in one of two units: what VIIRS reports (the main one, measured since 2012, estimated before)
    or what Aqua MODIS would have reported (the strict long record). Both are tested on held-out years.
    No build step: plain script, d3 + topojson from ./vendor. */
@@ -1702,7 +1702,7 @@ function renderAccess(){
     + `<p><span class="ak">Validation results (JSON)</span><a href="${esc(abs('api/validation'))}" target="_blank" rel="noopener"><code>api/validation</code></a></p>
        <p><span class="ak">Single detections</span>Download detections (CSV) at the bottom of this panel, for the selected area and the years of the time range.</p>
        <p><span class="ak">Data</span>NASA FIRMS: MODIS Collection 6.1 (MCD14ML) and VIIRS 375 m (VNP14IMGT, VJ114IMGT), standard processing; last 7 days from the FIRMS near-real-time NOAA-20 file. We acknowledge the use of data from NASA's Fire Information for Resource Management System (FIRMS), part of NASA's Earth Science Data and Information System (ESDIS).</p>
-       <p><span class="ak">Cite this record</span>blazeBridge (2026). Harmonized MODIS and VIIRS active-fire record, ${Y0}–${yearOf(T-1)}, in ${esc(state.harm ? unitName() : 'detections as reported')}. Built from NASA FIRMS. Not endorsed by NASA.</p>`;
+       <p><span class="ak">Cite this record</span>FirePulse (2026). Harmonized MODIS and VIIRS active-fire record, ${Y0}–${yearOf(T-1)}, in ${esc(state.harm ? unitName() : 'detections as reported')}. Built from NASA FIRMS. Not endorsed by NASA.</p>`;
 }
 
 function renderLook(){
@@ -1945,7 +1945,7 @@ async function restore(){
 /* ---------- downloads ---------- */
 async function downloadCsv(){
   const [a, b] = yearRange(), [url, opts] = request({...mParam(), start:`${a}-01`, end:`${b}-12`, format:'csv'});
-  try { const r = await fetch(url, opts); if(!r.ok) throw new Error(r.statusText); save(await r.blob(), `blazebridge_${slug()}_${a}-${b}.csv`); toast('Saved the monthly table. ' + unitSentence()); }
+  try { const r = await fetch(url, opts); if(!r.ok) throw new Error(r.statusText); save(await r.blob(), `firepulse_${slug()}_${a}-${b}.csv`); toast('Saved the monthly table. ' + unitSentence()); }
   catch(err){ toast('The download failed: ' + err.message); }
 }
 function downloadDetections(){
@@ -2017,8 +2017,8 @@ function briefing(){
       if(t === state.t){ g.strokeStyle = C.fg; g.lineWidth = 2; g.strokeRect(pad + 56 + m*cw + 1, yy + 1, cw - 2, ch - 2); } }
   }
   g.textAlign = 'left'; g.fillStyle = C.muted; font(400, 13);
-  wrapText(g, `Source: NASA FIRMS fire detections. ${unitSentence()} Clouds hide fires. The last 7 days are first numbers and can change. Made with blazeBridge.`, pad, Hb - 46, Wb - 2*pad, 18);
-  c.toBlob(blob => { if(blob){ save(blob, `blazebridge_briefing_${slug()}.png`); toast('Saved the briefing as an image.'); } else toast('The briefing could not be made.'); });
+  wrapText(g, `Source: NASA FIRMS fire detections. ${unitSentence()} Clouds hide fires. The last 7 days are first numbers and can change. Made with FirePulse.`, pad, Hb - 46, Wb - 2*pad, 18);
+  c.toBlob(blob => { if(blob){ save(blob, `firepulse_briefing_${slug()}.png`); toast('Saved the briefing as an image.'); } else toast('The briefing could not be made.'); });
 }
 function copyLink(){
   saveHash();
@@ -2034,8 +2034,8 @@ function buildAbout(){
   const V = UNITS.includes('viirs') ? VAL.viirs : null, vi = V && state.unit === 'viirs', bA = UNIT.aqua.base, bV = V && UNIT.viirs.base;
   const yrs = b => `${b[0]} to ${b[1]}`, refName = V ? {n20:'NOAA-20', snpp:'Suomi NPP'}[String(V.reference).toLowerCase()] || V.reference : '';
   $('aboutBody').innerHTML = `
-  <h2>How blazeBridge works</h2>
-  <p>Satellites have seen the heat of fires since 2000. Each place where a satellite saw a fire is a fire detection. The record comes from two kinds of instruments. MODIS (on the Terra and Aqua satellites, 1 km pixels) is the long series and is close to retirement. VIIRS (375 m pixels, since 2012) sees many small fires that MODIS misses. Side by side, the counts jump when VIIRS starts, for no real reason. blazeBridge ${V ? 'makes all years comparable in two ways' : 'adjusts all years so they compare'}.</p>
+  <h2>How FirePulse works</h2>
+  <p>Satellites have seen the heat of fires since 2000. Each place where a satellite saw a fire is a fire detection. The record comes from two kinds of instruments. MODIS (on the Terra and Aqua satellites, 1 km pixels) is the long series and is close to retirement. VIIRS (375 m pixels, since 2012) sees many small fires that MODIS misses. Side by side, the counts jump when VIIRS starts, for no real reason. FirePulse ${V ? 'makes all years comparable in two ways' : 'adjusts all years so they compare'}.</p>
   ${V ? `<h3>Two ways to count</h3>
   <ul>
     <li><b>${UNIT.viirs.label} (the main count).</b> What VIIRS on ${refName} reports. Measured from ${monthName(VSTART)}${V.ref_start && V.ref_start.slice(0, 7) !== V.start.slice(0, 7) ? ` (until ${monthName(tAt(V.ref_start))} from Suomi NPP, matched to ${refName})` : ''}. Earlier months are estimated from MODIS: per region (5° tiles) and calendar month, the ratio of VIIRS to MODIS detections in the years both flew. When Aqua and Terra both recorded, the estimate weighs Aqua ${pct(V.weight_aqua)} and Terra ${pct(1 - V.weight_aqua)}; before August 2002 it uses Terra alone.</li>

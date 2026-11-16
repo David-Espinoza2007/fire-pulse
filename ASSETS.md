@@ -20,7 +20,7 @@ naturalearthdata.com/about/terms-of-use (map data).
 ## Rules we follow
 
 - No NASA logos, insignia, seals or mission patches anywhere, and no wording that suggests NASA
-  owns, sponsors or endorses blazeBridge. NASA, FIRMS, MODIS and VIIRS appear only as data sources.
+  owns, sponsors or endorses FirePulse. NASA, FIRMS, MODIS and VIIRS appear only as data sources.
 - No third-party icon sets: the few icons the page needs (brand mark, play, pause, menu chevrons) are drawn by us as inline SVG or CSS.
 - New assets go in this table before they go in the page. If a licence cannot be confirmed, the
   asset is not used.
