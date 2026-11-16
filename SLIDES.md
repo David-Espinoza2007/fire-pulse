@@ -4,7 +4,7 @@ Numbers come from `data/world/serve/validation.json` (world run, 235 countries, 
 
 ## Slide 1 - Title
 
-**FirePulse: one fire record from MODIS to VIIRS**
+**blazeBridge: one fire record from MODIS to VIIRS**
 
 NASA Space Apps 2026, challenge "Harmonization of MODIS and VIIRS Hot Spots". Team name and members.
 
@@ -88,4 +88,4 @@ Error against real Aqua MODIS, per 5 degree tile and month, whole world, hidden 
 2. (6-12 s) Click **Harmonized**. The jump disappears. "Fire Calendar converts every VIIRS detection into what MODIS would have reported."
 3. (12-20 s) Spin the globe, select a country, show the calendar and the status line. "One consistent record from 2000 to today, for any area."
 4. (20-27 s) Open the trust map and the proof table. "Tested on years it never saw: 12 % error, against 513 % for raw counts."
-5. (27-30 s) Title card: "FirePulse. Built on NASA FIRMS data."
+5. (27-30 s) Title card: "blazeBridge. Built on NASA FIRMS data."

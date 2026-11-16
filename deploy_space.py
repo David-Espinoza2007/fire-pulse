@@ -1,4 +1,4 @@
-"""Publish FirePulse as a public Hugging Face Docker Space. The data goes to a dataset repository, the code to the Space.
+"""Publish blazeBridge as a public Hugging Face Docker Space. The data goes to a dataset repository, the code to the Space.
 Hugging Face creates a Docker Space only for accounts with a PRO plan (checked 15 Nov 2026: without it the request fails with error 402).
 
     hf auth login                        # once, with a token that can write
@@ -16,7 +16,7 @@ from pathlib import Path
 HERE = Path(__file__).parent
 CODE = ("app.py", "harmonize.py", "tiles.py", "pipeline.py", "requirements.txt", "Dockerfile", "static")
 CARD = """---
-title: FirePulse
+title: blazeBridge
 emoji: 🔥
 colorFrom: red
 colorTo: yellow
@@ -24,7 +24,7 @@ sdk: docker
 app_port: 7860
 pinned: false
 ---
-FirePulse: satellite fire detections from MODIS and VIIRS in one comparable record, for any country, state or drawn area.
+blazeBridge: satellite fire detections from MODIS and VIIRS in one comparable record, for any country, state or drawn area.
 NASA Space Apps 2026. Data: NASA FIRMS.
 """
 
@@ -63,7 +63,7 @@ if __name__ == "__main__":
     patterns = ["world/serve/**", "reference/*.parquet"] + (["world/hotspots/*/*.parquet"] if args.archive else [])
     api.upload_folder(repo_id=data_id, repo_type="dataset", folder_path=args.data, allow_patterns=patterns, ignore_patterns=["*.part"],
                       delete_patterns=["world/serve/**"],   # tiles of an older build must not stay
-                      commit_message="FirePulse data")
+                      commit_message="blazeBridge data")
     commit = api.dataset_info(data_id).sha
     api.create_repo(space_id, repo_type="space", space_sdk="docker", exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
@@ -73,6 +73,6 @@ if __name__ == "__main__":
         (tmp / "Dockerfile").write_bytes((HERE / "Dockerfile").read_bytes().replace(b"\r\n", b"\n"))   # a Windows checkout has CRLF; the Linux build needs LF
         (tmp / "README.md").write_text(CARD, encoding="utf-8")
         (tmp / "DATA_REPO").write_text(f"{data_id}@{commit}\n")
-        api.upload_folder(repo_id=space_id, repo_type="space", folder_path=tmp, delete_patterns="*", commit_message="FirePulse")
+        api.upload_folder(repo_id=space_id, repo_type="space", folder_path=tmp, delete_patterns="*", commit_message="blazeBridge")
     print(f"data:  https://huggingface.co/datasets/{data_id} ({commit[:8]})")
     print(f"space: https://huggingface.co/spaces/{space_id}  (the build takes a few minutes)")
