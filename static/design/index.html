@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fire Pulse design review</title>
+<title>blazeBridge design review</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%23111316'/%3E%3Cpath d='M4 20h6l3-9 4 14 3-8h8' fill='none' stroke='%23e8833a' stroke-width='2.4' stroke-linejoin='round'/%3E%3C/svg%3E">
 <!-- All five families are SIL Open Font License 1.1 (commercial use allowed). Loaded here only to preview them. -->
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Public+Sans:wght@400;500;600;700&family=Source+Sans+3:wght@400;600&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap">
@@ -79,7 +79,7 @@ th{color:var(--muted);font-weight:500}
 </head>
 <body>
 <div class="wrap">
-  <h1>Fire Pulse: design review</h1>
+  <h1>blazeBridge: design review</h1>
   <p><b>Applied on 14 November 2026:</b> type=B, color=A, buttons=A, controls=C, answer=B, icons=C, charts=C, layout=B, globe=Standard + Minimal (switch on the map), motion=A, brand=B. Elements 8 (timeline) kept as it was.</p>
   <p class="muted">Phase 1 audit and Phase 2 alternatives, kept as the record of the review. Pick A, B or C for each element (or none to keep what is there now), then send the summary line at the bottom. Each letter is one coherent direction, so picking the same letter everywhere gives a consistent result; mixing works too.</p>
   <div class="row" style="gap:18px;margin:14px 0 0;font-size:14px">
@@ -250,9 +250,9 @@ const CATS = [
  {id:'brand', name:'12 · Brand mark and favicon', now:'Emoji 🔥 favicon, the name set in Space Grotesk.',
   A:['Wordmark and ember square', `<div class="dA"><div class="row" style="gap:10px"><svg width="34" height="34" viewBox="0 0 32 32"><rect width="32" height="32" fill="#16191c"/><rect x="11" y="11" width="10" height="10" fill="#e8833a"/></svg><span style="font:500 18px var(--c-num)">fire&nbsp;pulse</span></div><div class="mu" style="font-size:12px;margin-top:8px">The square is one grid cell with fire: the data unit itself.</div></div>`,
      'Minimal and ownable; scales to a 16 px favicon.', 'Very quiet; recognition comes from use, not from the mark.'],
-  B:['Globe lines with one hot point', `<div class="dB"><div class="row" style="gap:10px"><svg width="34" height="34" viewBox="0 0 32 32"><circle cx="16" cy="16" r="13" fill="none" stroke="#1e2023" stroke-width="1.6"/><ellipse cx="16" cy="16" rx="6" ry="13" fill="none" stroke="#1e2023" stroke-width="1.2"/><path d="M3 16h26" stroke="#1e2023" stroke-width="1.2"/><circle cx="21" cy="11" r="3" fill="#c2410c"/></svg><span style="font:600 19px var(--c-head)">Fire Pulse</span></div><div class="mu" style="font-size:12px;margin-top:8px">Our own drawing; not based on any agency insignia.</div></div>`,
+  B:['Globe lines with one hot point', `<div class="dB"><div class="row" style="gap:10px"><svg width="34" height="34" viewBox="0 0 32 32"><circle cx="16" cy="16" r="13" fill="none" stroke="#1e2023" stroke-width="1.6"/><ellipse cx="16" cy="16" rx="6" ry="13" fill="none" stroke="#1e2023" stroke-width="1.2"/><path d="M3 16h26" stroke="#1e2023" stroke-width="1.2"/><circle cx="21" cy="11" r="3" fill="#c2410c"/></svg><span style="font:600 19px var(--c-head)">blazeBridge</span></div><div class="mu" style="font-size:12px;margin-top:8px">Our own drawing; not based on any agency insignia.</div></div>`,
      'Says "Earth" and "fire" at once; classic cartographic feel.', 'Globe marks are common; keep it simple and avoid any resemblance to agency seals.'],
-  C:['Pulse line', `<div class="dC"><div class="row" style="gap:10px"><svg width="34" height="34" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#111a24"/><path d="M4 18h6l3-8 4 13 3-7h8" fill="none" stroke="#f08a3c" stroke-width="2.2" stroke-linejoin="round"/></svg><span style="font:700 18px var(--c-head)">Fire Pulse</span></div><div class="mu" style="font-size:12px;margin-top:8px">A trace that rises with fire activity: the name, drawn.</div></div>`,
+  C:['Pulse line', `<div class="dC"><div class="row" style="gap:10px"><svg width="34" height="34" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#111a24"/><path d="M4 18h6l3-8 4 13 3-7h8" fill="none" stroke="#f08a3c" stroke-width="2.2" stroke-linejoin="round"/></svg><span style="font:700 18px var(--c-head)">blazeBridge</span></div><div class="mu" style="font-size:12px;margin-top:8px">A trace that rises with fire activity: the name, drawn.</div></div>`,
      'Literal and memorable; works in one colour.', 'Pulse lines are often used for health products; context makes it read as data.']},
 ];
 
